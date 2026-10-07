@@ -1,6 +1,7 @@
 import base64
 from datetime import datetime, timezone
 import hashlib
+import logging
 import secrets
 import threading
 import time
@@ -10,6 +11,8 @@ from .backends import CleanupFailed, LoraIncompatible, SDXLBackend
 from .config import Settings
 from .registry import Registry, valid_id
 from .schemas import GenerationRequest
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ServiceError(Exception):
@@ -95,6 +98,7 @@ class Engine:
             if refreshed is None or refreshed.fingerprint != checkpoint.fingerprint:
                 raise ServiceError(409, "resource_changed", "Model files changed during load")
         except Exception as exc:
+            LOGGER.exception("Model load failed: model_id=%s", model_id)
             try:
                 if backend is not None:
                     backend.unload()
@@ -131,6 +135,7 @@ class Engine:
         try:
             backend.unload()
         except Exception as exc:
+            LOGGER.exception("Model unload failed: model_id=%s", model_id)
             with self.state_lock:
                 self.state = "error"
                 self.last_error = "unload_failed"
@@ -187,15 +192,19 @@ class Engine:
                     "metadata": {"model_revision": revision, "seed": seed,
                                  "loras": lora_info, "inference_ms": int((time.perf_counter() - start) * 1000)}}
         except CleanupFailed as exc:
+            LOGGER.exception("Adapter cleanup failed: model_id=%s", request.model)
             with self.state_lock:
                 self.state = "error"
                 self.last_error = "adapter_cleanup_failed"
             raise ServiceError(500, "adapter_cleanup_failed", "Adapter cleanup failed") from exc
         except LoraIncompatible as exc:
+            LOGGER.warning("LoRA rejected: model_id=%s lora_id=%s", request.model,
+                           request.loras[0].lora_id if request.loras else "")
             raise ServiceError(400, "lora_incompatible", "LoRA cannot be applied to this model") from exc
         except ServiceError:
             raise
         except Exception as exc:
+            LOGGER.exception("Generation failed: model_id=%s", request.model)
             if "out of memory" in str(exc).lower():
                 with self.state_lock:
                     self.state = "error"
