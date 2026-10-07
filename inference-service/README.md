@@ -27,11 +27,11 @@ uv sync --python 3.12 --extra test
 uv run --python 3.12 --extra test pytest -q
 ```
 
-CPU 测试使用注入的假 backend，不需要下载模型。`uv.lock` 锁定服务与测试依赖；GPU 依赖是候选版本范围，须以 DGX 实测后固定。不要把 `.env`、Token 或权重提交到 Git。
+CPU 测试使用注入的假 backend，不需要下载模型。`uv.lock` 锁定服务与测试依赖。Python 3.14 的 Diffusers/Transformers/Accelerate/PEFT 组合已在 DGX 导入并运行到模型预热，完整出图仍待空闲 GPU 验证。CUDA PyTorch 应使用设备供应方提供的构建；不要让通用包安装覆盖已验证的 PyTorch。不要把 `.env`、Token 或权重提交到 Git。
 
 ## 启动
 
-在已具备兼容 PyTorch/CUDA、Diffusers、Transformers、Accelerate、PEFT、Safetensors 的 Python 环境中安装本项目。GPU 主机的包版本需要实测；不要让通用 PyPI 轮子覆盖已验证的 NVIDIA PyTorch 构建。
+在已具备兼容 PyTorch/CUDA、Diffusers、Transformers、Accelerate、PEFT、Safetensors 的 Python 环境中安装本项目。DGX 当前是 Python 3.14 与厂商 CUDA PyTorch 2.13；应在隔离环境中保留其 CUDA 构建并安装本项目依赖。GPU 主机的最终部署组合仍需实测。
 
 ```bash
 export MODEL_ROOT=/models/checkpoints
@@ -63,3 +63,5 @@ curl -H "Authorization: Bearer $INFERENCE_TOKEN" \
 先在本机推送，再在 DGX 拉取同一提交。DGX 的 `~/models/noobai-XL-1.1` 当前是直接 Diffusers 布局，可设 `MODEL_ROOT=~/models` 做无 LoRA 出图冒烟；其现有 LoRA 集中在 `~/models/loras`，因此不会被自动当作 NoobAI LoRA。验证指定 LoRA 时，需要在该模型自己的 `loras/` 中部署匹配权重，或在隔离测试目录准备权重映射；不要在线服务中临时跨模型搜索 LoRA。
 
 运行 `python scripts/smoke.py --model noobai-XL-1.1`。该脚本从环境变量读取 API 地址和两个 Token，加载模型、生成并检查 PNG；`--lora-id` 可追加 LoRA 验证。模型加载、LoRA 兼容、数值隔离、OOM 恢复和显存峰值必须在 DGX 实测后才能算通过。当前仓库的 CPU 测试不覆盖这些 GPU 行为。
+
+2026-10-08 验证记录：本机 Python 3.12 和 DGX Python 3.12/3.14 的协议测试均通过。DGX 上 NoobAI-XL-v1.1 可由 Diffusers 加载；直接 GPU 驻留、组件级 CPU offload 和逐层 CPU offload 在其他常驻计算任务运行时分别遇到 CUDA OOM，因此尚未获得完整 PNG。不要把此环境测试视为模型本身不兼容，也不要为了验证本服务中断其他任务。

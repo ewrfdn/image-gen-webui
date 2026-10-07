@@ -5,23 +5,33 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "image-gen-inference"
 version = "0.1.0"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.12,<3.15"
 dependencies = [
-  "fastapi==0.115.6",
-  "uvicorn==0.34.0",
-  "pydantic==2.10.4",
-  "pillow==11.1.0",
-  "psutil==6.1.1",
+  "fastapi==0.115.6; python_version < '3.14'",
+  "fastapi==0.142.2; python_version >= '3.14'",
+  "uvicorn==0.34.0; python_version < '3.14'",
+  "uvicorn==0.54.0; python_version >= '3.14'",
+  "pydantic==2.10.4; python_version < '3.14'",
+  "pydantic==2.13.5; python_version >= '3.14'",
+  "pillow==11.1.0; python_version < '3.14'",
+  "pillow==12.3.0; python_version >= '3.14'",
+  "psutil==6.1.1; python_version < '3.14'",
+  "psutil==7.2.2; python_version >= '3.14'",
 ]
 
 [project.optional-dependencies]
 gpu = [
-  "torch>=2.5,<2.8",
-  "diffusers>=0.33,<0.36",
-  "transformers>=4.46,<4.53",
-  "accelerate>=1.2,<2",
-  "peft>=0.14,<0.17",
-  "safetensors>=0.5,<0.7",
+  "torch>=2.5,<2.8; python_version < '3.14'",
+  "diffusers>=0.33,<0.36; python_version < '3.14'",
+  "transformers>=4.46,<4.53; python_version < '3.14'",
+  "accelerate>=1.2,<2; python_version < '3.14'",
+  "peft>=0.14,<0.17; python_version < '3.14'",
+  "safetensors>=0.5,<0.7; python_version < '3.14'",
+  "diffusers==0.39.0; python_version >= '3.14'",
+  "transformers==4.57.6; python_version >= '3.14'",
+  "accelerate==1.12.0; python_version >= '3.14'",
+  "peft==0.18.0; python_version >= '3.14'",
+  "safetensors==0.8.0; python_version >= '3.14'",
 ]
 test = ["pytest==8.3.4", "httpx==0.28.1"]
 
