@@ -64,7 +64,7 @@ class Engine:
             source_status = "missing" if source is None else ("present" if source.fingerprint == fingerprint else "changed")
             result.append({"model_id": current_id, "revision": fingerprint, "state": state,
                            "device": self.settings.device,
-                           "placement": "cpu_offload" if self.settings.model_offload == "model_cpu" else ("gpu" if "cuda" in self.settings.device else "cpu"),
+                           "placement": "cpu_offload" if self.settings.model_offload != "none" else ("gpu" if "cuda" in self.settings.device else "cpu"),
                            "active_requests": active, "can_generate": state == "ready" and source_status == "present",
                            "source_status": source_status, "loaded_at": loaded_at,
                            "last_error": last_error})
@@ -114,6 +114,8 @@ class Engine:
                 self.last_error = "load_failed"
             if isinstance(exc, ServiceError):
                 raise
+            if "out of memory" in str(exc).lower():
+                raise ServiceError(500, "gpu_oom", "GPU ran out of memory during model load") from exc
             raise ServiceError(500, "load_failed", "Model load or warmup failed") from exc
         with self.state_lock:
             self.backend = backend

@@ -35,6 +35,9 @@ class SDXLBackend:
         if self.model_offload == "model_cpu":
             pipe.enable_model_cpu_offload(gpu_id=int(self.device.split(":", 1)[1]))
             self.pipeline = pipe
+        elif self.model_offload == "sequential_cpu":
+            pipe.enable_sequential_cpu_offload(gpu_id=int(self.device.split(":", 1)[1]))
+            self.pipeline = pipe
         else:
             self.pipeline = pipe.to(self.device)
         with torch.inference_mode():

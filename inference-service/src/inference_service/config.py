@@ -29,8 +29,8 @@ class Settings:
         if not (device == "cpu" or device.startswith("cuda:")):
             raise RuntimeError("DEVICE must be cpu or cuda:<index>")
         offload = os.environ.get("MODEL_OFFLOAD", "none")
-        if offload not in {"none", "model_cpu"}:
-            raise RuntimeError("MODEL_OFFLOAD must be none or model_cpu")
+        if offload not in {"none", "model_cpu", "sequential_cpu"}:
+            raise RuntimeError("MODEL_OFFLOAD must be none, model_cpu or sequential_cpu")
         if offload != "none" and not device.startswith("cuda:"):
             raise RuntimeError("MODEL_OFFLOAD requires a CUDA device")
         return cls(Path(root).expanduser().resolve(), inference, admin,

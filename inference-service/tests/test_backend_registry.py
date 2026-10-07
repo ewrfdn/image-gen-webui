@@ -78,7 +78,7 @@ def test_sdxl_backend_resets_adapter_on_every_request(project, monkeypatch):
         backend.generate(base, None, 4)
 
 
-def test_model_cpu_offload_avoids_full_pipeline_to_gpu(project, monkeypatch):
+def test_offload_modes_avoid_full_pipeline_to_gpu(project, monkeypatch):
     app, _, root = project
 
     class FakeGenerator:
@@ -93,21 +93,26 @@ def test_model_cpu_offload_avoids_full_pipeline_to_gpu(project, monkeypatch):
         inference_mode=nullcontext, Generator=FakeGenerator))
 
     class FakePipe:
-        offloaded = False
+        offloaded = None
 
         def to(self, device):
             raise AssertionError("full pipeline must not be moved to GPU")
 
         def enable_model_cpu_offload(self, gpu_id):
             assert gpu_id == 0
-            self.offloaded = True
+            self.offloaded = "model_cpu"
+
+        def enable_sequential_cpu_offload(self, gpu_id):
+            assert gpu_id == 0
+            self.offloaded = "sequential_cpu"
 
         def __call__(self, **kwargs):
             return SimpleNamespace(images=[Image.new("RGB", (1, 1))])
 
-    pipe = FakePipe()
-    monkeypatch.setitem(sys.modules, "diffusers", SimpleNamespace(
-        StableDiffusionXLPipeline=SimpleNamespace(from_pretrained=lambda *args, **kwargs: pipe)))
-    backend = SDXLBackend("cuda:0", "bfloat16", "model_cpu")
-    backend.load(Registry(root).checkpoints()["sdxl-base"])
-    assert pipe.offloaded
+    for mode in ("model_cpu", "sequential_cpu"):
+        pipe = FakePipe()
+        monkeypatch.setitem(sys.modules, "diffusers", SimpleNamespace(
+            StableDiffusionXLPipeline=SimpleNamespace(from_pretrained=lambda *args, **kwargs: pipe)))
+        backend = SDXLBackend("cuda:0", "bfloat16", mode)
+        backend.load(Registry(root).checkpoints()["sdxl-base"])
+        assert pipe.offloaded == mode
