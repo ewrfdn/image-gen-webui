@@ -36,7 +36,8 @@ gpu = [
 test = ["pytest==8.3.4", "httpx==0.28.1"]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["inference_service*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
