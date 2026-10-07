@@ -39,10 +39,13 @@ export INFERENCE_TOKEN='replace-with-random-inference-token'
 export ADMIN_TOKEN='replace-with-different-random-admin-token'
 export DEVICE=cuda:0
 export DTYPE=bfloat16
+export MODEL_OFFLOAD=none
 uvicorn inference_service.app:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
 ```
 
 仅在可信网络内暴露端口。管理 Token 与推理 Token 必须不同。单进程、单执行槽；不要增加 Uvicorn worker 数量，否则会重复加载模型并破坏并发保护。`GET /health/ready` 在空载时仍返回 200；具体模型是否可生成，以 `GET /internal/v1/models?loaded=true` 为准。
+
+GPU 剩余内存不足以直接常驻完整 pipeline 时，可设置 `MODEL_OFFLOAD=model_cpu`，将组件按需从主机内存搬到 GPU。此模式需要 Accelerate，速度通常较慢，并增加主机内存占用；加载与生成仍需在目标机器上实测。
 
 ```bash
 curl -H "Authorization: Bearer $ADMIN_TOKEN" -X POST \

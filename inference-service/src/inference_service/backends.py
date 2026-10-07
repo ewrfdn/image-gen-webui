@@ -17,9 +17,10 @@ class LoraIncompatible(Exception):
 
 
 class SDXLBackend:
-    def __init__(self, device: str, dtype: str):
+    def __init__(self, device: str, dtype: str, model_offload: str = "none"):
         self.device = device
         self.dtype = dtype
+        self.model_offload = model_offload
         self.pipeline: Any = None
 
     def load(self, checkpoint: Checkpoint) -> None:
@@ -31,7 +32,11 @@ class SDXLBackend:
         pipe = StableDiffusionXLPipeline.from_pretrained(
             str(checkpoint.path), torch_dtype=dtype, use_safetensors=True,
             local_files_only=True)
-        self.pipeline = pipe.to(self.device)
+        if self.model_offload == "model_cpu":
+            pipe.enable_model_cpu_offload(gpu_id=int(self.device.split(":", 1)[1]))
+            self.pipeline = pipe
+        else:
+            self.pipeline = pipe.to(self.device)
         with torch.inference_mode():
             self.pipeline(prompt="warmup", width=512, height=512,
                           num_inference_steps=1, guidance_scale=0.0,

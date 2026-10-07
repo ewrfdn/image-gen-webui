@@ -11,6 +11,7 @@ class Settings:
     device: str = "cuda:0"
     dtype: str = "bfloat16"
     instance_id: str = "gpu-node-1"
+    model_offload: str = "none"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -27,6 +28,11 @@ class Settings:
             raise RuntimeError("DTYPE must be float16, bfloat16 or float32")
         if not (device == "cpu" or device.startswith("cuda:")):
             raise RuntimeError("DEVICE must be cpu or cuda:<index>")
+        offload = os.environ.get("MODEL_OFFLOAD", "none")
+        if offload not in {"none", "model_cpu"}:
+            raise RuntimeError("MODEL_OFFLOAD must be none or model_cpu")
+        if offload != "none" and not device.startswith("cuda:"):
+            raise RuntimeError("MODEL_OFFLOAD requires a CUDA device")
         return cls(Path(root).expanduser().resolve(), inference, admin,
                    device, dtype,
-                   os.environ.get("INSTANCE_ID", "gpu-node-1"))
+                   os.environ.get("INSTANCE_ID", "gpu-node-1"), offload)

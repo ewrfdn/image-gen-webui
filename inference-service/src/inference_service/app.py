@@ -154,6 +154,7 @@ def create_app(settings: Settings | None = None, backend_factory=None) -> FastAP
     @app.get("/internal/v1/capabilities", dependencies=[Depends(admin_auth)])
     async def capabilities():
         return {"instance_id": settings.instance_id, "max_loaded_models": 1,
+                "model_offload": settings.model_offload,
                 "busy": engine.operation_lock.locked(),
                 "models": [{"model_id": item.model_id, "architecture": "sdxl", "sizes": {
                     "min": 512, "max": 1024, "multiple_of": 64, "max_pixels": 1048576},

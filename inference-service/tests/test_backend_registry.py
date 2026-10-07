@@ -76,3 +76,38 @@ def test_sdxl_backend_resets_adapter_on_every_request(project, monkeypatch):
     pipe.fail_reset_at = 5
     with pytest.raises(CleanupFailed):
         backend.generate(base, None, 4)
+
+
+def test_model_cpu_offload_avoids_full_pipeline_to_gpu(project, monkeypatch):
+    app, _, root = project
+
+    class FakeGenerator:
+        def __init__(self, device):
+            pass
+
+        def manual_seed(self, seed):
+            return self
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        float16="float16", bfloat16="bfloat16", float32="float32",
+        inference_mode=nullcontext, Generator=FakeGenerator))
+
+    class FakePipe:
+        offloaded = False
+
+        def to(self, device):
+            raise AssertionError("full pipeline must not be moved to GPU")
+
+        def enable_model_cpu_offload(self, gpu_id):
+            assert gpu_id == 0
+            self.offloaded = True
+
+        def __call__(self, **kwargs):
+            return SimpleNamespace(images=[Image.new("RGB", (1, 1))])
+
+    pipe = FakePipe()
+    monkeypatch.setitem(sys.modules, "diffusers", SimpleNamespace(
+        StableDiffusionXLPipeline=SimpleNamespace(from_pretrained=lambda *args, **kwargs: pipe)))
+    backend = SDXLBackend("cuda:0", "bfloat16", "model_cpu")
+    backend.load(Registry(root).checkpoints()["sdxl-base"])
+    assert pipe.offloaded

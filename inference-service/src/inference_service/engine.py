@@ -24,7 +24,7 @@ class Engine:
     def __init__(self, settings: Settings, backend_factory=None):
         self.settings = settings
         self.registry = Registry(settings.model_root)
-        self.backend_factory = backend_factory or (lambda: SDXLBackend(settings.device, settings.dtype))
+        self.backend_factory = backend_factory or (lambda: SDXLBackend(settings.device, settings.dtype, settings.model_offload))
         self.boot_id = str(uuid.uuid4())
         self.operation_lock = threading.Lock()
         self.state_lock = threading.Lock()
@@ -60,7 +60,8 @@ class Engine:
             source = models.get(current_id)
             source_status = "missing" if source is None else ("present" if source.fingerprint == fingerprint else "changed")
             result.append({"model_id": current_id, "revision": fingerprint, "state": state,
-                           "device": self.settings.device, "placement": "gpu" if "cuda" in self.settings.device else "cpu",
+                           "device": self.settings.device,
+                           "placement": "cpu_offload" if self.settings.model_offload == "model_cpu" else ("gpu" if "cuda" in self.settings.device else "cpu"),
                            "active_requests": active, "can_generate": state == "ready" and source_status == "present",
                            "source_status": source_status, "loaded_at": loaded_at,
                            "last_error": last_error})
