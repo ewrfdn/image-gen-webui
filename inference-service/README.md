@@ -2,6 +2,24 @@
 
 独立的同步文生图服务。默认空载启动；管理端先调用 `load`，业务 Worker 再调用 `POST /v1/images/generations`。服务不保存用户、任务或图片。首期只实现 SDXL 的本地 Diffusers pipeline；Qwen-Image-2.1 尚未接入。
 
+## 代码结构
+
+```text
+inference_service/
+  app.py                    # 保持稳定的 ASGI 启动入口
+  api/app.py                # HTTP 路由、认证、错误响应和 OpenAPI
+  engine/service.py         # 单模型执行槽、加载/卸载、生成与状态
+  engine/registry.py        # checkpoint 和 LoRA 的只读发现与校验
+  backends/base.py          # backend 接口及共用异常
+  backends/factory.py       # 根据模型架构选择 backend
+  backends/sdxl/backend.py  # SDXL 的加载、出图和 LoRA 隔离
+  config.py                 # 运行配置
+  resources.py              # 各层共享的资源类型
+  schemas.py                # 各层共享的请求和响应类型
+```
+
+新增模型实现时，在 `backends/` 下为该架构建立独立目录，并在 `factory.py` 注册；API 路由只调用 engine，engine 通过统一的 backend 接口执行模型操作。
+
 ## 资源目录
 
 推荐布局与规划一致：

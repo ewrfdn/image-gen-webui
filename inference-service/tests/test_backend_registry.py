@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from dataclasses import replace
 import shutil
 import sys
 from types import SimpleNamespace
@@ -6,9 +7,22 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from inference_service.backends import CleanupFailed, SDXLBackend
-from inference_service.registry import Lora, Registry
+from inference_service.backends.base import CleanupFailed
+from inference_service.backends.factory import create_backend
+from inference_service.backends.sdxl.backend import SDXLBackend
+from inference_service.config import Settings
+from inference_service.engine.registry import Registry
+from inference_service.resources import Lora
 from inference_service.schemas import GenerationRequest
+
+
+def test_backend_factory_selects_discovered_architecture(project):
+    _, _, root = project
+    checkpoint = Registry(root).checkpoints()["sdxl-base"]
+    settings = Settings(root, "infer-secret", "admin-secret", "cpu", "float32", "test-node")
+    assert isinstance(create_backend(checkpoint, settings), SDXLBackend)
+    with pytest.raises(ValueError, match="Unsupported model architecture"):
+        create_backend(replace(checkpoint, architecture="unknown"), settings)
 
 
 def test_direct_diffusers_layout_keeps_global_loras_unassigned(project, tmp_path):

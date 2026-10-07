@@ -29,7 +29,7 @@ class FakeBackend:
             self.wait_started.set()
             assert self.wait_release.wait(5)
         if self.fail_cleanup:
-            from inference_service.backends import CleanupFailed
+            from inference_service.backends.base import CleanupFailed
             raise CleanupFailed()
         output = io.BytesIO()
         Image.new("RGB", (1, 1), "red").save(output, format="PNG")
@@ -51,7 +51,7 @@ def project(tmp_path: Path):
     (lora_dir / "style.safetensors").write_bytes(len(header).to_bytes(8, "little") + header + b"\0\0\0\0")
     backend = FakeBackend()
     settings = Settings(tmp_path, "infer-secret", "admin-secret", "cpu", "float32", "test-node")
-    return create_app(settings, lambda: backend), backend, tmp_path
+    return create_app(settings, lambda checkpoint: backend), backend, tmp_path
 
 
 @pytest.fixture

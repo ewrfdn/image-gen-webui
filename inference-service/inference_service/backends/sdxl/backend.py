@@ -1,19 +1,11 @@
 """GPU backend, imported lazily so protocol tests run without CUDA packages."""
 
 import gc
-from pathlib import Path
 from typing import Any
 
-from .registry import Checkpoint, Lora
-from .schemas import GenerationRequest
-
-
-class CleanupFailed(Exception):
-    pass
-
-
-class LoraIncompatible(Exception):
-    pass
+from ...resources import Checkpoint, Lora
+from ...schemas import GenerationRequest
+from ..base import CleanupFailed, LoraIncompatible
 
 
 class SDXLBackend:

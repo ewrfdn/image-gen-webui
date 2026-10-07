@@ -1,3 +1,4 @@
+import asyncio
 import base64
 from datetime import datetime, timezone
 import hashlib
@@ -6,11 +7,14 @@ import secrets
 import threading
 import time
 import uuid
+from typing import Callable
 
-from .backends import CleanupFailed, LoraIncompatible, SDXLBackend
-from .config import Settings
+from ..backends.base import Backend, CleanupFailed, LoraIncompatible
+from ..backends.factory import create_backend
+from ..config import Settings
+from ..resources import Checkpoint
+from ..schemas import GenerationRequest
 from .registry import Registry, valid_id
-from .schemas import GenerationRequest
 
 LOGGER = logging.getLogger(__name__)
 
@@ -24,14 +28,15 @@ class ServiceError(Exception):
 
 
 class Engine:
-    def __init__(self, settings: Settings, backend_factory=None):
+    def __init__(self, settings: Settings,
+                 backend_factory: Callable[[Checkpoint], Backend] | None = None):
         self.settings = settings
         self.registry = Registry(settings.model_root)
-        self.backend_factory = backend_factory or (lambda: SDXLBackend(settings.device, settings.dtype, settings.model_offload))
+        self.backend_factory = backend_factory or (lambda checkpoint: create_backend(checkpoint, settings))
         self.boot_id = str(uuid.uuid4())
         self.operation_lock = threading.Lock()
         self.state_lock = threading.Lock()
-        self.backend = None
+        self.backend: Backend | None = None
         self.model_id: str | None = None
         self.fingerprint: str | None = None
         self.state = "unloaded"
@@ -45,6 +50,29 @@ class Engine:
 
     def release(self) -> None:
         self.operation_lock.release()
+
+    async def load(self, model_id: str) -> dict:
+        self.acquire()
+        try:
+            return await asyncio.to_thread(self.load_locked, model_id)
+        finally:
+            self.release()
+
+    async def unload(self, model_id: str) -> dict:
+        if self.active_requests and self.model_id == model_id:
+            raise ServiceError(409, "model_in_use", "Model is in use")
+        self.acquire()
+        try:
+            return await asyncio.to_thread(self.unload_locked, model_id)
+        finally:
+            self.release()
+
+    async def generate(self, request: GenerationRequest) -> dict:
+        self.acquire()
+        try:
+            return await asyncio.to_thread(self.generate_locked, request)
+        finally:
+            self.release()
 
     def snapshot(self, loaded_only: bool = False) -> dict:
         models = self.registry.checkpoints()
@@ -92,7 +120,7 @@ class Engine:
             self.last_error = None
         backend = None
         try:
-            backend = self.backend_factory()
+            backend = self.backend_factory(checkpoint)
             backend.load(checkpoint)
             refreshed = self.registry.checkpoints().get(model_id)
             if refreshed is None or refreshed.fingerprint != checkpoint.fingerprint:
