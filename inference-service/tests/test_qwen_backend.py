@@ -195,3 +195,26 @@ def test_qwen_offload_avoids_full_gpu_transfer(project, monkeypatch, mode):
         QwenImage21Pipeline=SimpleNamespace(from_pretrained=lambda *args, **kwargs: pipe)))
     QwenImage21Backend("cuda:0", "bfloat16", mode).load(Registry(root).checkpoints()["qwen-image-21"])
     assert pipe.offload == (mode, 0)
+
+
+def test_qwen_failed_gpu_transfer_keeps_pipeline_for_cleanup(project, monkeypatch):
+    _, _, root = project
+    add_qwen_checkpoint(root)
+    pipe = FakePipe()
+
+    def fail_transfer(device):
+        raise RuntimeError("CUDA out of memory")
+
+    pipe.to = fail_transfer
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        float16="float16", bfloat16="bfloat16", float32="float32",
+        inference_mode=nullcontext, Generator=FakeGenerator,
+        cuda=SimpleNamespace(is_available=lambda: False)))
+    monkeypatch.setitem(sys.modules, "diffusers", SimpleNamespace(
+        QwenImage21Pipeline=SimpleNamespace(from_pretrained=lambda *args, **kwargs: pipe)))
+    backend = QwenImage21Backend("cuda:0", "bfloat16")
+    with pytest.raises(RuntimeError, match="out of memory"):
+        backend.load(Registry(root).checkpoints()["qwen-image-21"])
+    assert backend.pipeline is pipe
+    backend.unload()
+    assert backend.pipeline is None

@@ -25,12 +25,12 @@ class QwenImage21Backend:
         pipe = QwenImage21Pipeline.from_pretrained(
             str(checkpoint.path), dtype=dtype, use_safetensors=True,
             local_files_only=True)
+        # Keep a reference before GPU transfer so a failed transfer can be unloaded.
+        self.pipeline = pipe
         if self.model_offload == "model_cpu":
             pipe.enable_model_cpu_offload(gpu_id=int(self.device.split(":", 1)[1]))
-            self.pipeline = pipe
         elif self.model_offload == "sequential_cpu":
             pipe.enable_sequential_cpu_offload(gpu_id=int(self.device.split(":", 1)[1]))
-            self.pipeline = pipe
         else:
             self.pipeline = pipe.to(self.device)
         with torch.inference_mode():
