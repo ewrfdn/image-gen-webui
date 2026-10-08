@@ -28,6 +28,7 @@ class BackendCapabilities:
     max_pixels: int
     default_steps: int
     default_guidance: float
+    lora_limit: int = 1
 
     def validate_size(self, size: str) -> bool:
         width, height = (int(part) for part in size.split("x"))
@@ -43,7 +44,7 @@ class BackendCapabilities:
                           "multiple_of": self.multiple_of, "max_pixels": self.max_pixels},
                 "steps": {"min": 1, "max": 100, "default": self.default_steps},
                 "guidance_scale": {"default": self.default_guidance},
-                "lora_limit": 1}
+                "lora_limit": self.lora_limit}
 
 
 class Backend(Protocol):

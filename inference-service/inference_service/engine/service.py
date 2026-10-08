@@ -231,6 +231,8 @@ class Engine:
             lora = None
             lora_info = []
             if request.loras:
+                if CAPABILITIES[checkpoint.architecture].lora_limit == 0:
+                    raise ServiceError(400, "unsupported_parameter", "LoRA is not supported for this model")
                 lora = self.registry.lora(request.model, request.loras[0].lora_id)
                 if lora is None:
                     raise ServiceError(404, "lora_not_found", "LoRA not found")

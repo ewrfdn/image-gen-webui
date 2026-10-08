@@ -2,6 +2,7 @@
 
 import hmac
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -16,7 +17,16 @@ from ..schemas import GenerationRequest, GenerationResponse, LifecycleResponse
 def create_app(settings: Settings | None = None, backend_factory=None) -> FastAPI:
     settings = settings or Settings.from_env()
     engine = Engine(settings, backend_factory)
-    app = FastAPI(title="Image inference service", version="0.1.0")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        try:
+            yield
+        finally:
+            if engine.model_id and engine.backend is not None:
+                await engine.unload(engine.model_id)
+
+    app = FastAPI(title="Image inference service", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine
 
     @app.middleware("http")
