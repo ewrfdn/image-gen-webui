@@ -9,6 +9,8 @@ import time
 import uuid
 from typing import Callable
 
+import psutil
+
 from ..backends.base import Backend, CleanupFailed, LoraIncompatible, UnsupportedParameter
 from ..backends.factory import CAPABILITIES, create_backend
 from ..config import Settings
@@ -98,6 +100,31 @@ class Engine:
                            "last_error": last_error})
         return {"instance_id": self.settings.instance_id, "boot_id": self.boot_id,
                 "max_loaded_models": 1, "models": result}
+
+    def resources(self) -> dict:
+        memory = psutil.virtual_memory()
+        result = {"sampled_at": int(time.time()), "host_memory": {
+            "total_bytes": memory.total, "available_bytes": memory.available}, "gpu": None}
+        try:
+            import torch
+            if torch.cuda.is_available():
+                free, total = torch.cuda.mem_get_info(self.settings.device)
+                result["gpu"] = {"device": self.settings.device,
+                                 "name": torch.cuda.get_device_name(self.settings.device),
+                                 "total_bytes": total, "free_bytes": free,
+                                 "process_allocated_bytes": torch.cuda.memory_allocated(self.settings.device),
+                                 "process_reserved_bytes": torch.cuda.memory_reserved(self.settings.device)}
+        except (ImportError, RuntimeError, AssertionError):
+            pass
+        return result
+
+    def capabilities(self) -> dict:
+        return {"instance_id": self.settings.instance_id, "max_loaded_models": 1,
+                "model_offload": self.settings.model_offload,
+                "busy": self.operation_lock.locked(),
+                "models": [{"model_id": item.model_id, **CAPABILITIES[item.architecture].public(),
+                    "loras": [lora.public() for lora in self.registry.loras(item.model_id)]}
+                    for item in self.registry.checkpoints().values()]}
 
     def load_locked(self, model_id: str) -> dict:
         if not valid_id(model_id):

@@ -1,16 +1,12 @@
 """HTTP routes, auth and response mapping for the inference engine."""
 
 import hmac
-import time
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-import psutil
-
-from ..backends.factory import CAPABILITIES
 from ..config import Settings
 from ..engine.registry import valid_id
 from ..engine.service import Engine, ServiceError
@@ -126,29 +122,11 @@ def create_app(settings: Settings | None = None, backend_factory=None) -> FastAP
 
     @app.get("/internal/v1/resources", dependencies=[Depends(admin_auth)])
     async def resources():
-        memory = psutil.virtual_memory()
-        result = {"sampled_at": int(time.time()), "host_memory": {
-            "total_bytes": memory.total, "available_bytes": memory.available}, "gpu": None}
-        try:
-            import torch
-            if torch.cuda.is_available():
-                free, total = torch.cuda.mem_get_info(settings.device)
-                result["gpu"] = {"device": settings.device, "name": torch.cuda.get_device_name(settings.device),
-                                 "total_bytes": total, "free_bytes": free,
-                                 "process_allocated_bytes": torch.cuda.memory_allocated(settings.device),
-                                 "process_reserved_bytes": torch.cuda.memory_reserved(settings.device)}
-        except (ImportError, RuntimeError, AssertionError):
-            pass
-        return result
+        return engine.resources()
 
     @app.get("/internal/v1/capabilities", dependencies=[Depends(admin_auth)])
     async def capabilities():
-        return {"instance_id": settings.instance_id, "max_loaded_models": 1,
-                "model_offload": settings.model_offload,
-                "busy": engine.operation_lock.locked(),
-                "models": [{"model_id": item.model_id, **CAPABILITIES[item.architecture].public(),
-                    "loras": [lora.public() for lora in engine.registry.loras(item.model_id)]}
-                    for item in engine.registry.checkpoints().values()]}
+        return engine.capabilities()
 
     @app.post("/v1/images/generations", dependencies=[Depends(infer_auth)],
               response_model=GenerationResponse)
