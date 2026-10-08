@@ -9,8 +9,8 @@ import time
 import uuid
 from typing import Callable
 
-from ..backends.base import Backend, CleanupFailed, LoraIncompatible
-from ..backends.factory import create_backend
+from ..backends.base import Backend, CleanupFailed, LoraIncompatible, UnsupportedParameter
+from ..backends.factory import CAPABILITIES, create_backend
 from ..config import Settings
 from ..resources import Checkpoint
 from ..schemas import GenerationRequest
@@ -193,6 +193,8 @@ class Engine:
                 raise ServiceError(409, "model_transitioning", "Model is transitioning")
             if checkpoint is None or checkpoint.fingerprint != self.fingerprint:
                 raise ServiceError(409, "resource_changed", "Model files changed; unload and reload")
+            if not CAPABILITIES[checkpoint.architecture].validate_size(request.size):
+                raise ServiceError(400, "unsupported_size", "Image size is not supported by this model")
             backend = self.backend
             revision = self.fingerprint
             self.active_requests = 1
@@ -231,6 +233,8 @@ class Engine:
             LOGGER.warning("LoRA rejected: model_id=%s lora_id=%s", request.model,
                            request.loras[0].lora_id if request.loras else "")
             raise ServiceError(400, "lora_incompatible", "LoRA cannot be applied to this model") from exc
+        except UnsupportedParameter as exc:
+            raise ServiceError(400, "unsupported_parameter", str(exc)) from exc
         except ServiceError:
             raise
         except Exception as exc:

@@ -16,8 +16,8 @@ class GenerationRequest(BaseModel):
     n: Literal[1] = 1
     response_format: Literal["b64_json"] = "b64_json"
     seed: int | None = Field(default=None, ge=0, le=2**32 - 1)
-    num_inference_steps: int = Field(default=25, ge=1, le=100)
-    guidance_scale: float = Field(default=7.0, ge=0, le=20, allow_inf_nan=False)
+    num_inference_steps: int | None = Field(default=None, ge=1, le=100)
+    guidance_scale: float | None = Field(default=None, ge=0, le=20, allow_inf_nan=False)
     negative_prompt: str | None = Field(default=None, max_length=4000)
     loras: list[LoraSelection] = Field(default_factory=list, max_length=1)
 
@@ -28,8 +28,8 @@ class GenerationRequest(BaseModel):
             width, height = (int(part) for part in value.split("x"))
         except (ValueError, AttributeError):
             raise ValueError("size must be WIDTHxHEIGHT") from None
-        if width < 512 or height < 512 or width > 1024 or height > 1024 or width * height > 1024 * 1024 or width % 64 or height % 64:
-            raise ValueError("size must be multiples of 64 from 512 to 1024, at most 1024² pixels")
+        if width < 512 or height < 512 or width > 2752 or height > 2752 or width * height > 4_718_592 or width % 32 or height % 32:
+            raise ValueError("size must use multiples of 32 from 512 to 2752, at most 4718592 pixels")
         return value
 
 

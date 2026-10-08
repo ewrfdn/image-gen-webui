@@ -861,18 +861,30 @@
             "title": "Seed"
           },
           "num_inference_steps": {
-            "type": "integer",
-            "maximum": 100.0,
-            "minimum": 1.0,
-            "title": "Num Inference Steps",
-            "default": 25
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Num Inference Steps"
           },
           "guidance_scale": {
-            "type": "number",
-            "maximum": 20.0,
-            "minimum": 0.0,
-            "title": "Guidance Scale",
-            "default": 7.0
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 20.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guidance Scale"
           },
           "negative_prompt": {
             "anyOf": [

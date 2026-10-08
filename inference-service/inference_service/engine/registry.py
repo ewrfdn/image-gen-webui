@@ -11,6 +11,11 @@ ID_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 _SKIP_SUFFIXES = (".tmp", ".partial")
 _SDXL_COMPONENTS = ("unet", "vae", "text_encoder", "text_encoder_2",
                     "tokenizer", "tokenizer_2", "scheduler")
+_QWEN_IMAGE_21_COMPONENTS = ("processor", "scheduler", "text_encoder", "transformer", "vae")
+_PIPELINES = {"StableDiffusionXLPipeline": "sdxl", "QwenImage21Pipeline": "qwen_image_21"}
+_COMPONENTS = {"sdxl": _SDXL_COMPONENTS, "qwen_image_21": _QWEN_IMAGE_21_COMPONENTS}
+_WEIGHT_COMPONENTS = {"sdxl": ("unet", "vae", "text_encoder", "text_encoder_2"),
+                      "qwen_image_21": ("text_encoder", "transformer", "vae")}
 
 
 def valid_id(value: str) -> bool:
@@ -58,17 +63,17 @@ class Registry:
                     if not _inside(index_path, self.root):
                         raise OSError("model index outside resource root")
                     index = json.loads(index_path.read_text(encoding="utf-8"))
-                    architecture = "sdxl" if index.get("_class_name") == "StableDiffusionXLPipeline" else "unsupported"
+                    architecture = _PIPELINES.get(index.get("_class_name"), "unsupported")
                     if architecture == "unsupported":
                         reason = "unsupported_pipeline"
                     else:
-                        for component in _SDXL_COMPONENTS:
+                        for component in _COMPONENTS[architecture]:
                             part = model_dir / component
                             if not part.is_dir() or not _inside(part, self.root) or not any(part.iterdir()):
                                 reason = "incomplete_component"
                                 break
                         if reason is None:
-                            for component in ("unet", "vae", "text_encoder", "text_encoder_2"):
+                            for component in _WEIGHT_COMPONENTS[architecture]:
                                 if not any(_inside(weight, self.root) for weight in (model_dir / component).glob("*.safetensors")):
                                     reason = "missing_weights"
                                     break

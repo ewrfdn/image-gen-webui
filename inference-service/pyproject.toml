@@ -22,16 +22,11 @@ dependencies = [
 [project.optional-dependencies]
 gpu = [
   "torch>=2.5,<2.8; python_version < '3.14'",
-  "diffusers>=0.33,<0.36; python_version < '3.14'",
-  "transformers>=4.46,<4.53; python_version < '3.14'",
-  "accelerate>=1.2,<2; python_version < '3.14'",
-  "peft>=0.14,<0.17; python_version < '3.14'",
-  "safetensors>=0.5,<0.7; python_version < '3.14'",
-  "diffusers==0.39.0; python_version >= '3.14'",
-  "transformers==4.57.6; python_version >= '3.14'",
-  "accelerate==1.12.0; python_version >= '3.14'",
-  "peft==0.18.0; python_version >= '3.14'",
-  "safetensors==0.8.0; python_version >= '3.14'",
+  "diffusers @ git+https://github.com/huggingface/diffusers.git@d961a388fd02e4db38d17350c8dd9b8abe642e05",
+  "transformers==5.19.0",
+  "accelerate==1.12.0",
+  "peft==0.21.2",
+  "safetensors==0.8.0",
 ]
 test = ["pytest==8.3.4", "httpx==0.28.1"]
 

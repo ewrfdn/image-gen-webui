@@ -73,6 +73,7 @@ def test_sdxl_backend_resets_adapter_on_every_request(project, monkeypatch):
 
         def __call__(self, **kwargs):
             self.events.append("generate")
+            self.last_kwargs = kwargs
             return SimpleNamespace(images=[Image.new("RGB", (1, 1))])
 
     pipe = FakePipe()
@@ -82,6 +83,8 @@ def test_sdxl_backend_resets_adapter_on_every_request(project, monkeypatch):
     styled = GenerationRequest(model="sdxl-base", prompt="test", loras=[{"lora_id": "style", "scale": 0.3}])
     lora = Lora("sdxl-base", "style", root / "sdxl-base" / "loras" / "style.safetensors", "fingerprint")
     backend.generate(base, None, 1)
+    assert pipe.last_kwargs["num_inference_steps"] == 25
+    assert pipe.last_kwargs["guidance_scale"] == 7.0
     backend.generate(styled, lora, 2)
     backend.generate(base, None, 3)
     assert pipe.events == ["reset", "generate", "reset", "load", ("scale", 0.3),

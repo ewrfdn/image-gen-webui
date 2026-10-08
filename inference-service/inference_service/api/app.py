@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import psutil
 
+from ..backends.factory import CAPABILITIES
 from ..config import Settings
 from ..engine.registry import valid_id
 from ..engine.service import Engine, ServiceError
@@ -145,9 +146,7 @@ def create_app(settings: Settings | None = None, backend_factory=None) -> FastAP
         return {"instance_id": settings.instance_id, "max_loaded_models": 1,
                 "model_offload": settings.model_offload,
                 "busy": engine.operation_lock.locked(),
-                "models": [{"model_id": item.model_id, "architecture": "sdxl", "sizes": {
-                    "min": 512, "max": 1024, "multiple_of": 64, "max_pixels": 1048576},
-                    "steps": {"min": 1, "max": 100}, "lora_limit": 1,
+                "models": [{"model_id": item.model_id, **CAPABILITIES[item.architecture].public(),
                     "loras": [lora.public() for lora in engine.registry.loras(item.model_id)]}
                     for item in engine.registry.checkpoints().values()]}
 
