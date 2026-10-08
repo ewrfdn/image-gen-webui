@@ -11,7 +11,7 @@ from typing import Callable
 
 import psutil
 
-from ..backends.base import Backend, BackendUnhealthy, CleanupFailed, LoraIncompatible, UnsupportedParameter
+from ..backends.base import Backend, CleanupFailed, LoraIncompatible, UnsupportedParameter
 from ..backends.factory import CAPABILITIES, create_backend
 from ..config import Settings
 from ..resources import Checkpoint
@@ -231,8 +231,6 @@ class Engine:
             lora = None
             lora_info = []
             if request.loras:
-                if CAPABILITIES[checkpoint.architecture].lora_limit == 0:
-                    raise ServiceError(400, "unsupported_parameter", "LoRA is not supported for this model")
                 lora = self.registry.lora(request.model, request.loras[0].lora_id)
                 if lora is None:
                     raise ServiceError(404, "lora_not_found", "LoRA not found")
@@ -258,12 +256,6 @@ class Engine:
                 self.state = "error"
                 self.last_error = "adapter_cleanup_failed"
             raise ServiceError(500, "adapter_cleanup_failed", "Adapter cleanup failed") from exc
-        except BackendUnhealthy as exc:
-            LOGGER.exception("Backend became unhealthy: model_id=%s", request.model)
-            with self.state_lock:
-                self.state = "error"
-                self.last_error = "backend_unhealthy"
-            raise ServiceError(503, "backend_unhealthy", "Backend requires unload and reload") from exc
         except LoraIncompatible as exc:
             LOGGER.warning("LoRA rejected: model_id=%s lora_id=%s", request.model,
                            request.loras[0].lora_id if request.loras else "")

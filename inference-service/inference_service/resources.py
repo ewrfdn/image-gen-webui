@@ -3,13 +3,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-QWEN_COMFY_MODEL_ID = "qwen-image-2.1-comfy"
-QWEN_COMFY_FILES = {
-    "transformer": Path("diffusion_models/qwen_image_2.1_bf16.safetensors"),
-    "text_encoder": Path("text_encoders/qwen3vl_8b_bf16.safetensors"),
-    "vae": Path("vae/qwen_image_2.1_vae_bf16.safetensors"),
-}
-
 
 @dataclass(frozen=True)
 class Checkpoint:
@@ -24,8 +17,7 @@ class Checkpoint:
 
     def public(self) -> dict:
         result = {"model_id": self.model_id, "architecture": self.architecture,
-                  "format": "comfyui" if self.layout == "comfy" else "diffusers",
-                  "layout": self.layout, "availability": self.availability,
+                  "format": "diffusers", "layout": self.layout, "availability": self.availability,
                   "validation": "structure_checked", "fingerprint": self.fingerprint}
         if self.reason:
             result["reason"] = self.reason

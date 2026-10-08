@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 
-from ..resources import Checkpoint, Lora, QWEN_COMFY_FILES, QWEN_COMFY_MODEL_ID
+from ..resources import Checkpoint, Lora
 
 ID_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 _SKIP_SUFFIXES = (".tmp", ".partial")
@@ -47,24 +47,7 @@ class Registry:
         result: dict[str, Checkpoint] = {}
         if not self.root.is_dir():
             return result
-        files = [self.root / relative for relative in QWEN_COMFY_FILES.values()]
-        comfy_present = any(path.exists() for path in files)
-        if comfy_present:
-            complete = all(path.is_file() and _inside(path, self.root) for path in files)
-            if complete or include_invalid:
-                entries = [(str(path.relative_to(self.root)), path.stat().st_size, path.stat().st_mtime_ns)
-                           for path in files] if complete else []
-                fingerprint = hashlib.sha256(json.dumps(entries, separators=(",", ":")).encode()).hexdigest() if complete else ""
-                result[QWEN_COMFY_MODEL_ID] = Checkpoint(
-                    QWEN_COMFY_MODEL_ID, self.root, self.root / QWEN_COMFY_MODEL_ID,
-                    "qwen_image_21_comfy", fingerprint, "comfy",
-                    "available" if complete else "invalid",
-                    None if complete else "missing_comfy_component")
         for directory in self.root.iterdir():
-            if directory.name == QWEN_COMFY_MODEL_ID:
-                continue
-            if comfy_present and directory.name in {relative.parts[0] for relative in QWEN_COMFY_FILES.values()}:
-                continue
             if not valid_id(directory.name) or not directory.is_dir() or not _inside(directory, self.root):
                 continue
             nested_model = directory / "model"

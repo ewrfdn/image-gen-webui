@@ -89,23 +89,6 @@ def test_invalid_requests_and_poisoned_engine(project, admin_headers, infer_head
                            json={"model": "sdxl-base", "prompt": "x"}).status_code == 503
 
 
-def test_unhealthy_backend_requires_unload(project, admin_headers, infer_headers):
-    from inference_service.backends.base import BackendUnhealthy
-
-    app, backend, _ = project
-    def fail(*args):
-        raise BackendUnhealthy("private process exited")
-    backend.generate = fail
-    with TestClient(app) as client:
-        assert client.post("/internal/v1/models/sdxl-base/load", headers=admin_headers).status_code == 200
-        response = client.post("/v1/images/generations", headers=infer_headers,
-                               json={"model": "sdxl-base", "prompt": "x"})
-        assert response.status_code == 503
-        assert response.json()["error"]["code"] == "backend_unhealthy"
-        assert client.get("/health/ready").status_code == 503
-        assert client.post("/internal/v1/models/sdxl-base/unload", headers=admin_headers).status_code == 200
-
-
 def test_file_change_blocks_new_generation(project, admin_headers, infer_headers):
     app, _, root = project
     with TestClient(app) as client:

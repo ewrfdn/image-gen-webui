@@ -12,8 +12,6 @@ class Settings:
     dtype: str = "bfloat16"
     instance_id: str = "gpu-node-1"
     model_offload: str = "none"
-    comfyui_root: Path | None = None
-    comfyui_python: Path | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -35,10 +33,6 @@ class Settings:
             raise RuntimeError("MODEL_OFFLOAD must be none, model_cpu or sequential_cpu")
         if offload != "none" and not device.startswith("cuda:"):
             raise RuntimeError("MODEL_OFFLOAD requires a CUDA device")
-        comfy_root = os.environ.get("COMFYUI_ROOT")
-        comfy_python = os.environ.get("COMFYUI_PYTHON")
         return cls(Path(root).expanduser().resolve(), inference, admin,
                    device, dtype,
-                   os.environ.get("INSTANCE_ID", "gpu-node-1"), offload,
-                   Path(comfy_root).expanduser().resolve() if comfy_root else None,
-                   Path(comfy_python).expanduser().resolve() if comfy_python else None)
+                   os.environ.get("INSTANCE_ID", "gpu-node-1"), offload)
