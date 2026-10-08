@@ -32,9 +32,10 @@ def test_comfy_layout_is_discovered_only_when_complete(tmp_path):
 
 
 def test_private_comfy_process_load_generate_unload(tmp_path, monkeypatch):
-    root = tmp_path / "models"
-    comfy = root
+    comfy = tmp_path / "ComfyUI"
+    root = comfy / "models"
     python = tmp_path / "python"
+    comfy.mkdir()
     root.mkdir()
     (comfy / "main.py").touch()
     python.touch()
@@ -42,9 +43,6 @@ def test_private_comfy_process_load_generate_unload(tmp_path, monkeypatch):
         source = root / relative
         source.parent.mkdir()
         source.write_bytes(b"weights")
-        target = comfy / "models" / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(source.read_bytes())
     checkpoint = Registry(root).checkpoints()[QWEN_COMFY_MODEL_ID]
     backend = ComfyQwenImage21Backend(Settings(root, "infer", "admin", comfyui_root=comfy, comfyui_python=python))
     events = []
