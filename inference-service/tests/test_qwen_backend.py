@@ -73,6 +73,27 @@ def test_qwen_registry_rejects_incomplete_and_legacy_pipeline(project):
     assert registry.checkpoints(include_invalid=True)["qwen-image-21"].reason == "unsupported_pipeline"
 
 
+def test_qwen_registry_requires_every_hf_weight_shard(project):
+    _, _, root = project
+    model = add_qwen_checkpoint(root)
+    transformer = model / "transformer"
+    (transformer / "model.safetensors").unlink()
+    first = "diffusion_pytorch_model-00001-of-00002.safetensors"
+    second = "diffusion_pytorch_model-00002-of-00002.safetensors"
+    (transformer / first).write_bytes(b"first")
+    (transformer / "diffusion_pytorch_model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a": first, "b": second}}))
+    registry = Registry(root)
+    assert "qwen-image-21" not in registry.checkpoints()
+    assert registry.checkpoints(include_invalid=True)["qwen-image-21"].reason == "missing_weights"
+    (transformer / second).write_bytes(b"second")
+    fingerprint = registry.checkpoints()["qwen-image-21"].fingerprint
+    cache = model / ".cache" / "huggingface"
+    cache.mkdir(parents=True)
+    (cache / "download.json").write_text("progress")
+    assert registry.checkpoints()["qwen-image-21"].fingerprint == fingerprint
+
+
 class FakeGenerator:
     def __init__(self, device):
         self.device = device

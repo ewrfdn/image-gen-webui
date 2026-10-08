@@ -16,6 +16,7 @@ _PIPELINES = {"StableDiffusionXLPipeline": "sdxl", "QwenImage21Pipeline": "qwen_
 _COMPONENTS = {"sdxl": _SDXL_COMPONENTS, "qwen_image_21": _QWEN_IMAGE_21_COMPONENTS}
 _WEIGHT_COMPONENTS = {"sdxl": ("unet", "vae", "text_encoder", "text_encoder_2"),
                       "qwen_image_21": ("text_encoder", "transformer", "vae")}
+_SHARD_RE = re.compile(r"(.+)-(\d{5})-of-(\d{5})\.safetensors\Z")
 
 
 def valid_id(value: str) -> bool:
@@ -33,10 +34,44 @@ def _inside(path: Path, root: Path) -> bool:
 def _manifest_fingerprint(path: Path, root: Path) -> str:
     entries = []
     for item in sorted(path.rglob("*")):
-        if item.is_file() and _inside(item, root) and "loras" not in item.relative_to(path).parts:
+        parts = item.relative_to(path).parts
+        if item.is_file() and _inside(item, root) and "loras" not in parts and not any(part.startswith(".") for part in parts):
             stat = item.stat()
             entries.append((str(item.relative_to(path)), stat.st_size, stat.st_mtime_ns))
     return hashlib.sha256(json.dumps(entries, separators=(",", ":")).encode()).hexdigest()
+
+
+def _weights_complete(directory: Path, root: Path) -> bool:
+    indexes = list(directory.glob("*.safetensors.index.json"))
+    if indexes:
+        for index in indexes:
+            try:
+                if not _inside(index, root):
+                    return False
+                weight_map = json.loads(index.read_text(encoding="utf-8"))["weight_map"]
+                names = set(weight_map.values()) if isinstance(weight_map, dict) else set()
+                if not names or not all(isinstance(name, str) and name.endswith(".safetensors")
+                                        and "/" not in name and "\\" not in name
+                                        and (directory / name).is_file() and _inside(directory / name, root)
+                                        for name in names):
+                    return False
+            except (OSError, ValueError, TypeError, KeyError):
+                return False
+        return True
+    weights = [weight for weight in directory.glob("*.safetensors") if weight.is_file() and _inside(weight, root)]
+    if not weights:
+        return False
+    for weight in weights:
+        match = _SHARD_RE.fullmatch(weight.name)
+        if match:
+            prefix, _, total = match.groups()
+            if not 1 <= int(total) <= 1000:
+                return False
+            if not all((directory / f"{prefix}-{number:05d}-of-{total}.safetensors").is_file()
+                       and _inside(directory / f"{prefix}-{number:05d}-of-{total}.safetensors", root)
+                       for number in range(1, int(total) + 1)):
+                return False
+    return True
 
 
 class Registry:
@@ -74,7 +109,7 @@ class Registry:
                                 break
                         if reason is None:
                             for component in _WEIGHT_COMPONENTS[architecture]:
-                                if not any(_inside(weight, self.root) for weight in (model_dir / component).glob("*.safetensors")):
+                                if not _weights_complete(model_dir / component, self.root):
                                     reason = "missing_weights"
                                     break
                 except (OSError, ValueError, TypeError):
