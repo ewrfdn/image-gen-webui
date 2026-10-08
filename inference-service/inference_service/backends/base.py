@@ -11,6 +11,10 @@ class CleanupFailed(Exception):
     """A backend cannot guarantee that request state was reset."""
 
 
+class BackendUnhealthy(Exception):
+    """The loaded backend must be unloaded before another request."""
+
+
 class LoraIncompatible(Exception):
     """The requested LoRA cannot be applied to the loaded model."""
 

@@ -15,7 +15,7 @@ import uuid
 from ...config import Settings
 from ...resources import Checkpoint, Lora, QWEN_COMFY_FILES
 from ...schemas import GenerationRequest
-from ..base import UnsupportedParameter
+from ..base import BackendUnhealthy, UnsupportedParameter
 
 
 class ComfyQwenImage21Backend:
@@ -132,7 +132,10 @@ class ComfyQwenImage21Backend:
         width, height = (int(part) for part in request.size.split("x"))
         graph = self.workflow(request.prompt, request.negative_prompt or "", width, height, seed,
                               request.num_inference_steps or 40, guidance, "result_" + uuid.uuid4().hex)
-        return self._run_workflow(graph)
+        try:
+            return self._run_workflow(graph)
+        except Exception as exc:
+            raise BackendUnhealthy("private ComfyUI failed; unload the model before retrying") from exc
 
     def unload(self) -> None:
         try:
