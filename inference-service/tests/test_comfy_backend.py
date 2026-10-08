@@ -19,6 +19,7 @@ def test_comfy_layout_is_discovered_only_when_complete(tmp_path):
     first.write_bytes(b"weights")
     registry = Registry(root)
     assert QWEN_COMFY_MODEL_ID not in registry.checkpoints()
+    assert set(registry.checkpoints(include_invalid=True)) == {QWEN_COMFY_MODEL_ID}
     assert registry.checkpoints(include_invalid=True)[QWEN_COMFY_MODEL_ID].reason == "missing_comfy_component"
     for relative in list(QWEN_COMFY_FILES.values())[1:]:
         path = root / relative

@@ -48,7 +48,8 @@ class Registry:
         if not self.root.is_dir():
             return result
         files = [self.root / relative for relative in QWEN_COMFY_FILES.values()]
-        if any(path.exists() for path in files):
+        comfy_present = any(path.exists() for path in files)
+        if comfy_present:
             complete = all(path.is_file() and _inside(path, self.root) for path in files)
             if complete or include_invalid:
                 entries = [(str(path.relative_to(self.root)), path.stat().st_size, path.stat().st_mtime_ns)
@@ -61,6 +62,8 @@ class Registry:
                     None if complete else "missing_comfy_component")
         for directory in self.root.iterdir():
             if directory.name == QWEN_COMFY_MODEL_ID:
+                continue
+            if comfy_present and directory.name in {relative.parts[0] for relative in QWEN_COMFY_FILES.values()}:
                 continue
             if not valid_id(directory.name) or not directory.is_dir() or not _inside(directory, self.root):
                 continue
