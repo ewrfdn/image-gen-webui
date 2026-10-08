@@ -47,7 +47,7 @@ hf download Qwen/Qwen-Image-2.1 --local-dir ~/models/qwen-image-2.1
 export MODEL_ROOT=~/models
 ```
 
-若主机需要 Hugging Face 镜像，可在下载命令前设置该环境提供的 `HF_ENDPOINT`。下载完成后确认 `~/models/qwen-image-2.1/model_index.json` 存在，并以 `qwen-image-2.1` 为模型 ID 调用 API。现有三份 ComfyUI 单文件权重不会被这个 backend 加载；它们也不需要删除。
+也可从 Qwen 官方链接的 [ModelScope 镜像](https://modelscope.cn/models/Qwen/Qwen-Image-2.1) 下载同一 Diffusers 目录：`modelscope download Qwen/Qwen-Image-2.1 --local-dir ~/models/qwen-image-2.1`。下载完成后确认 `~/models/qwen-image-2.1/model_index.json` 存在，并以 `qwen-image-2.1` 为模型 ID 调用 API。现有三份 ComfyUI 单文件权重不会被这个 backend 加载；它们也不需要删除。
 
 ## 本机协议测试
 
@@ -99,3 +99,5 @@ curl -H "Authorization: Bearer $INFERENCE_TOKEN" \
 Qwen-Image 2.1 使用 `--model qwen-image-2.1` 执行相同脚本；建议先用 `--size 512x512 --steps 1` 验证加载和最小出图，再按显存余量验证较大尺寸及匹配的 LoRA。只在 GPU 和主机内存余量足够时运行，不影响已有任务。
 
 2026-10-08 验证记录：本机 Python 3.12 和 DGX Python 3.12/3.14 的协议测试均通过。DGX 上 NoobAI-XL-v1.1 可由 Diffusers 加载；直接 GPU 驻留、组件级 CPU offload 和逐层 CPU offload 在其他常驻计算任务运行时分别遇到 CUDA OOM，因此尚未获得完整 PNG。不要把此环境测试视为模型本身不兼容，也不要为了验证本服务中断其他任务。
+
+2026-10-08 Qwen-Image 2.1 记录：DGX 已下载完整官方 Diffusers 快照，注册表将 `qwen-image-2.1` 标为 available；使用独立 Python 3.14 环境可导入 `QwenImage21Pipeline`，依赖检查通过，模型发现和能力接口返回 200。真实 GPU 加载与 PNG 出图尚未执行：当时 `glm53-flash-tf` 占用约 94 GB GPU 内存，用户选择保留它并延后 GPU 测试。
