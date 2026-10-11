@@ -1,20 +1,22 @@
-from contextlib import asynccontextmanager
 import asyncio
 import base64
 import hashlib
-import hmac
 import secrets
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
+
 from fastapi import Depends, FastAPI, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
+
+from .accounts import Accounts
 from .config import Config
-from .db import ApiKey, MediaFile, Node, Setting, Task, now
-from .service import ApiError, Platform, WAITING
+from .db import ApiKey, MediaFile, Node, Setting, Task
+from .service import WAITING, ApiError, Platform
 
 
 class BackendInput(BaseModel):
@@ -35,15 +37,19 @@ class SettingsInput(BaseModel):
 
 def create_app(config=None, client=None):
     platform = Platform(config or Config.from_env(), client)
+    accounts = Accounts(platform)
 
     @asynccontextmanager
     async def lifespan(app):
+        await platform.db.initialize()
+        await accounts.initialize()
         await platform.start()
         yield
         await platform.close()
 
     app = FastAPI(title="Frame inference platform", version="0.1.0", lifespan=lifespan)
     app.state.platform = platform
+    app.state.accounts = accounts
 
     async def read_object(request):
         try:
@@ -74,23 +80,16 @@ def create_app(config=None, client=None):
         )
 
     async def authorize(request: Request):
-        auth = request.headers.get("authorization", "")
-        token = auth[7:] if auth.lower().startswith("bearer ") else ""
-        if token and hmac.compare_digest(token, platform.config.admin_token):
-            return {"owner": "admin", "admin": True}
-        async with platform.db.sessions() as db:
-            key = await db.scalar(
-                select(ApiKey).where(
-                    ApiKey.key_hash == hashlib.sha256(token.encode()).hexdigest(),
-                    ApiKey.enabled.is_(True),
-                    ApiKey.revoked.is_(False),
-                )
+        identity = await accounts.authorize(request)
+        if request.url.path.startswith("/v1/") and identity["role"] == "user":
+            raise ApiError(
+                403,
+                "api_not_allowed",
+                "Ordinary users can generate only through the platform",
             )
-            if not token or key is None:
-                raise ApiError(401, "unauthorized", "Invalid platform token or API Key")
-            key.last_used_at = now()
-            await db.commit()
-            return {"owner": "key:" + key.id, "admin": False}
+        return identity
+
+    accounts.install(app)
 
     async def admin(identity=Depends(authorize)):
         if not identity["admin"]:
@@ -109,7 +108,9 @@ def create_app(config=None, client=None):
 
     @app.get("/api/session")
     async def session(identity=Depends(authorize)):
-        return {"admin": identity["admin"]}
+        return {
+            k: identity.get(k) for k in ("admin", "role", "username", "user_id", "kind")
+        }
 
     @app.get("/api/models")
     async def models(identity=Depends(authorize)):
@@ -442,10 +443,18 @@ def create_app(config=None, client=None):
         return platform.settings
 
     @app.get("/api/admin/keys", dependencies=[Depends(admin)])
-    async def keys():
+    async def keys(identity=Depends(admin)):
         async with platform.db.sessions() as db:
             rows = (
-                await db.scalars(select(ApiKey).order_by(ApiKey.created_at.desc()))
+                await db.scalars(
+                    select(ApiKey)
+                    .where(
+                        True
+                        if identity["role"] == "super_admin"
+                        else ApiKey.user_id == identity["user_id"]
+                    )
+                    .order_by(ApiKey.created_at.desc())
+                )
             ).all()
         return {
             "keys": [
@@ -466,7 +475,7 @@ def create_app(config=None, client=None):
         }
 
     @app.post("/api/admin/keys", dependencies=[Depends(admin)])
-    async def create_key(request: Request):
+    async def create_key(request: Request, identity=Depends(admin)):
         body = await read_object(request)
         name = body.get("name")
         if not isinstance(name, str) or not 1 <= len(name) <= 128:
@@ -475,6 +484,7 @@ def create_app(config=None, client=None):
         async with platform.db.sessions() as db:
             key = ApiKey(
                 name=name,
+                user_id=identity["user_id"],
                 prefix=token[:16],
                 key_hash=hashlib.sha256(token.encode()).hexdigest(),
             )
@@ -483,7 +493,7 @@ def create_app(config=None, client=None):
         return {"id": key.id, "key": token, "prefix": key.prefix}
 
     @app.patch("/api/admin/keys/{key_id}", dependencies=[Depends(admin)])
-    async def change_key(key_id: str, request: Request):
+    async def change_key(key_id: str, request: Request, identity=Depends(admin)):
         body = await read_object(request)
         if set(body) - {"enabled", "revoked"} or any(
             not isinstance(v, bool) for v in body.values()
@@ -495,7 +505,9 @@ def create_app(config=None, client=None):
             )
         async with platform.db.sessions() as db:
             key = await db.get(ApiKey, key_id)
-            if key is None:
+            if key is None or (
+                identity["role"] != "super_admin" and key.user_id != identity["user_id"]
+            ):
                 raise ApiError(404, "key_not_found", "Key not found")
             if key.revoked:
                 raise ApiError(409, "key_revoked", "Revoked keys cannot be restored")

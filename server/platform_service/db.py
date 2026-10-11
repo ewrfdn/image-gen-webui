@@ -1,14 +1,26 @@
 """Durable business records. Model and LoRA catalogues deliberately have no tables."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    inspect,
+    text,
+)
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 def now():
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def uid():
@@ -17,6 +29,23 @@ def uid():
 
 class Base(DeclarativeBase):
     pass
+
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    username: Mapped[str] = mapped_column(String(64), unique=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+    role: Mapped[str] = mapped_column(String(32), default="user")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class LoginSession(Base):
+    __tablename__ = "login_sessions"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class Node(Base):
@@ -39,6 +68,7 @@ class ApiKey(Base):
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), index=True)
 
 
 class Setting(Base):
@@ -114,6 +144,20 @@ class Database:
     async def initialize(self):
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            columns = await conn.run_sync(
+                lambda sync: {c["name"] for c in inspect(sync).get_columns("api_keys")}
+            )
+            if "user_id" not in columns:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE api_keys ADD COLUMN user_id VARCHAR(36) REFERENCES users(id)"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_api_keys_user_id ON api_keys(user_id)"
+                    )
+                )
         async with self.sessions() as db:
             if await db.get(Setting, 1) is None:
                 db.add(Setting(id=1))

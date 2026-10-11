@@ -8,7 +8,7 @@ const assert=(v,m)=>{if(!v)throw new Error(m);};
  const page=await browser.newPage({viewport:{width:1100,height:1000}});
  const errors=[];page.on('pageerror',e=>errors.push(String(e)));
  await page.goto('http://127.0.0.1:18082');
- await page.locator('#frame-token').fill('ui-verification-token-0000000000');
+ await page.locator('#frame-username').fill('admin');await page.locator('#frame-password').fill('ui-verification-token-0000000000');
  await page.locator('#frame-login-form button').click();
  await page.locator('#dgx-studio').waitFor({state:'visible'});
  await page.locator('[data-page="backends"]').click();
@@ -46,19 +46,19 @@ const assert=(v,m)=>{if(!v)throw new Error(m);};
  await page.locator('[data-page="generate"]').click();await page.waitForFunction(()=>document.querySelector('#ig-submit').disabled);assert(await page.locator('#ig-submit').isDisabled(),'queue full blocks submit');
  for(const width of [1100,390,320]){
   await page.setViewportSize({width,height:1000});
-  for(const name of ['generate','backends','keys','settings']){
+  for(const name of ['generate','backends','keys','settings','users','account']){
    await page.locator('[data-page="'+name+'"]').click();
    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+2),'no outer overflow '+width+' '+name);
    if(width!==320)await page.screenshot({path:path.join(directory,name+'-'+width+'.png'),fullPage:true});
   }
  }
  await page.locator('[data-page="keys"]').click();await page.locator('#ig-key-name').fill('Non-admin session');await page.locator('#ig-key-form button').click();await page.locator('#ig-created-key').waitFor({state:'visible'});
- const clientKey=await page.locator('#ig-key-value').inputValue();
+ await page.locator('[data-page="users"]').click();await page.locator('#ig-user-name').fill('ui-user');await page.locator('#ig-user-password').fill('ui-password-123');await page.locator('#ig-user-form button').click();await page.getByText('账号已创建。',{exact:true}).waitFor();
  await page.locator('#frame-logout').click();
- assert(await page.locator('#frame-token').inputValue()==='','logout clears entered access token');
+ assert(await page.locator('#frame-password').inputValue()==='','logout clears entered password');
  assert(await page.locator('#ig-key-value').inputValue()==='','logout clears one-time key');
- await page.locator('#frame-token').fill(clientKey);await page.locator('#frame-login-form button').click();await page.locator('#dgx-studio').waitFor({state:'visible'});
- assert(!await page.locator('[data-page="keys"]').isVisible(),'API key session has no admin navigation');
+ await page.locator('#frame-username').fill('ui-user');await page.locator('#frame-password').fill('ui-password-123');await page.locator('#frame-login-form button').click();await page.locator('#dgx-studio').waitFor({state:'visible'});
+ assert(!await page.locator('[data-page="keys"]').isVisible(),'ordinary user has no admin navigation');
  assert(await page.locator('[data-screen="generate"]').isVisible(),'API key login resets to generate');
  assert(await page.locator('#ig-keys tr').count()===0,'previous admin key rows cleared');
  assert(errors.length===0,'runtime errors: '+errors.join(';'));

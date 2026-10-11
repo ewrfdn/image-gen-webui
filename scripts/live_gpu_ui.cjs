@@ -13,7 +13,7 @@ const path=require('path');
   const page=await browser.newPage({viewport:{width:1100,height:1000}});
   const errors=[];page.on('pageerror',e=>errors.push(String(e)));
   await page.goto(base);
-  await page.locator('#frame-token').fill(token);await page.locator('#frame-login-form button').click();
+  await page.locator('#frame-username').fill('admin');await page.locator('#frame-password').fill(token);await page.locator('#frame-login-form button').click();
   await page.locator('#dgx-studio').waitFor({state:'visible'});
   await page.waitForFunction(()=>[...document.querySelector('#ig-model').options].some(o=>o.value.startsWith('noobai-XL-1.1|')));
   const model=await page.locator('#ig-model option').evaluateAll(opts=>opts.find(o=>o.value.startsWith('noobai-XL-1.1|')).value);

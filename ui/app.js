@@ -3,7 +3,8 @@ const $ = id => document.getElementById(id);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const statusName = {available:'可生成',need_load:'需要加载',busy:'等待节点',unavailable:'暂不可用'};
 const taskName = {pending:'等待调度',processing:'准备生成',loading:'加载模型',submitted:'正在生成',running:'正在生成',persisting:'保存结果',succeeded:'已完成',failed:'失败',unknown:'结果未知'};
-let token = sessionStorage.getItem('frame-token') || '';
+let token = '';
+let superAdmin = false, users = [];
 let admin = false, models = [], nodes = [], keys = [], files = [], page = 'generate', modelKey = '', latestTask = null;
 let queueCount = 0, maxCount = 100, editNode = null, referenceUrls = [], resultUrls = [], refreshRunning = false;
 let settings = {max_count:100,refresh_seconds:5,stale_seconds:15};
@@ -11,7 +12,7 @@ let saving = false;
 let resultVersion = 0;
 
 async function api(path, options = {}) {
-  const headers = {Authorization:'Bearer '+token, ...(options.headers || {})};
+  const headers = {...(options.headers || {})};
   if (options.body && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
   const response = await fetch(path, {...options, headers});
   if (!response.ok) {
@@ -27,26 +28,26 @@ function message(id,text) { $(id).textContent=text; $(id).hidden=!text; }
 function selected() { return models.find(m => m.model_id+'|'+m.revision===modelKey); }
 
 function logout() {
-  token=''; admin=false; models=[]; nodes=[]; keys=[]; latestTask=null; modelKey=''; resultVersion++;
+  token=''; admin=false; superAdmin=false; users=[]; models=[]; nodes=[]; keys=[]; latestTask=null; modelKey=''; resultVersion++;
   sessionStorage.removeItem('frame-token'); root.hidden=true; $('frame-login').hidden=false;
   $('ig-key-value').value=''; $('ig-created-key').hidden=true;
   $('ig-node-admin').value=''; $('ig-node-inference').value='';
-  $('frame-token').value='';
+  $('frame-password').value=''; $('ig-user-password').value=''; $('ig-users').innerHTML='';
+  $('ig-password-form').reset(); $('frame-identity').textContent='';
   $('ig-task-list').innerHTML=''; $('ig-result').innerHTML=''; delete $('ig-result').dataset.signature;
   clearReferences(); renderKeys(); renderNodes(); navigate('generate');
   resultUrls.forEach(URL.revokeObjectURL); resultUrls=[];
 }
-async function login(value) {
-  token=value;
+async function login() {
   try {
-    const identity=await json('/api/session'); admin=identity.admin;
-    sessionStorage.setItem('frame-token',token); $('frame-login').hidden=true; root.hidden=false;
-    root.querySelectorAll('[data-page]').forEach(button => button.hidden=button.dataset.page!=='generate'&&!admin);
+    const identity=await json('/api/session'); token=identity.user_id+'|'+Math.random(); permissions(identity);
+    $('frame-password').value=''; $('frame-login').hidden=true; root.hidden=false;
     await refresh();
   } catch (error) { message('frame-login-error',error.message); }
 }
-$('frame-login-form').addEventListener('submit',e=>{e.preventDefault();login($('frame-token').value);});
-$('frame-logout').onclick=logout;
+function permissions(identity){admin=identity.admin;superAdmin=identity.role==='super_admin';$('frame-identity').textContent=identity.username+' · '+({user:'用户',admin:'管理员',super_admin:'超级管理员'}[identity.role]);root.querySelectorAll('[data-page]').forEach(button=>button.hidden=button.dataset.page==='users'?!superAdmin:!['generate','account'].includes(button.dataset.page)&&!admin);if((page==='users'&&!superAdmin)||(!['generate','account'].includes(page)&&!admin))navigate('generate');}
+$('frame-login-form').addEventListener('submit',async e=>{e.preventDefault();try{await json('/api/auth/login',{method:'POST',body:JSON.stringify({username:$('frame-username').value,password:$('frame-password').value})});await login();}catch(error){message('frame-login-error',error.message);}});
+$('frame-logout').onclick=async()=>{const pending=json('/api/auth/logout',{method:'POST'});logout();const button=$('frame-login-form').querySelector('button');button.disabled=true;try{await pending;}catch(error){message('frame-login-error',error.message);}finally{button.disabled=false;}};
 
 function renderModels() {
   const previousLora=$('ig-lora').value;
@@ -126,13 +127,14 @@ $('ig-task-list').onclick=e=>{const button=e.target.closest('[data-task]');if(bu
 
 function navigate(name){page=name;root.querySelectorAll('[data-screen]').forEach(e=>e.hidden=e.dataset.screen!==name);root.querySelectorAll('[data-page]').forEach(e=>e.setAttribute('aria-pressed',String(e.dataset.page===name)));loadAdmin().catch(error=>message('ig-backend-message',error.message));}
 root.querySelector('.ig-nav').onclick=e=>{const button=e.target.closest('[data-page]');if(button)navigate(button.dataset.page);};
-async function refresh(){if(!token||refreshRunning)return;refreshRunning=true;const sessionToken=token;try{const [catalog,history]=await Promise.all([json('/api/models'),json('/api/tasks')]);if(sessionToken!==token)return;models=catalog.models;queueCount=catalog.queue_count;maxCount=catalog.max_count;renderModels();renderTasks(history.tasks);if(page==='backends')await loadAdmin();}catch(error){if(sessionToken===token)message('ig-submit-error',error.message);}finally{refreshRunning=false;}}
+async function refresh(){if(!token||refreshRunning)return;refreshRunning=true;const sessionToken=token;try{const [catalog,history,identity]=await Promise.all([json('/api/models'),json('/api/tasks'),json('/api/session')]);if(sessionToken!==token)return;permissions(identity);models=catalog.models;queueCount=catalog.queue_count;maxCount=catalog.max_count;renderModels();renderTasks(history.tasks);if(page==='backends')await loadAdmin();}catch(error){if(sessionToken===token)message('ig-submit-error',error.message);}finally{refreshRunning=false;}}
 async function loadAdmin(){
   if(!admin)return;
   const requestedPage=page, sessionToken=token;
   if(page==='backends'){const result=await json('/api/admin/backends');if(token!==sessionToken||page!==requestedPage)return;nodes=result.nodes;renderNodes();}
   if(page==='keys'){const result=await json('/api/admin/keys');if(token!==sessionToken||page!==requestedPage)return;keys=result.keys;renderKeys();}
   if(page==='settings'){const result=await json('/api/admin/settings');if(token!==sessionToken||page!==requestedPage)return;settings=result;$('ig-max').value=settings.max_count;$('ig-refresh').value=settings.refresh_seconds;$('ig-stale').value=settings.stale_seconds;}
+  if(page==='users'&&superAdmin){const result=await json('/api/admin/users');if(token!==sessionToken||page!==requestedPage)return;users=result.users;renderUsers();}
 }
 function renderNodes(){
   $('ig-nodes').innerHTML=nodes.map(n=>`<article class="ig-node"><div class="ig-node-head"><div><div class="ig-node-title"><strong>${escape(n.name)}</strong><span class="ig-pill">${!n.enabled?'已禁用':n.quarantined?'执行结果待确认':n.connected?'已连接':'连接失败'}</span></div><div class="ig-note">${escape(n.id)} · ${escape(n.base_url)}</div><div class="ig-note">${n.models.length} 个模型 / ${n.models.reduce((s,m)=>s+m.loras.length,0)} 个 LoRA${n.error?' · '+escape(n.error):''}</div></div><div class="ig-node-controls"><button class="ig-button" data-action="sync" data-node="${n.id}">立即同步</button><button class="ig-button" data-action="edit" data-node="${n.id}">编辑</button><button class="ig-button" data-action="toggle" data-node="${n.id}">${n.enabled?'禁用':'启用'}</button></div></div><details><summary>查看模型、LoRA 与配置 JSON</summary>${n.models.map(m=>`<h3>${escape(m.model_id)}</h3><p class="ig-note">LoRA：${escape(m.loras.map(l=>l.display_name||l.lora_id).join('、')||'无')}</p><pre><code>${escape(JSON.stringify(m.configuration,null,2))}</code></pre>`).join('')||'<p class="ig-note">暂无有效模型配置</p>'}</details></article>`).join('');
@@ -147,5 +149,11 @@ $('ig-key-form').addEventListener('submit',async e=>{e.preventDefault();try{cons
 $('ig-dismiss-key').onclick=()=>{$('ig-created-key').hidden=true;$('ig-key-value').value='';};
 $('ig-keys').onclick=async e=>{const button=e.target.closest('[data-key]');if(!button)return;const key=keys.find(k=>k.id===button.dataset.key);try{await json('/api/admin/keys/'+key.id,{method:'PATCH',body:JSON.stringify(button.dataset.action==='revoke'?{revoked:true}:{enabled:!key.enabled})});await loadAdmin();}catch(error){alert(error.message);}};
 $('ig-settings-form').addEventListener('submit',async e=>{e.preventDefault();try{settings=await json('/api/admin/settings',{method:'PUT',body:JSON.stringify({max_count:Number($('ig-max').value),refresh_seconds:Number($('ig-refresh').value),stale_seconds:Number($('ig-stale').value)})});message('ig-settings-message','参数已保存。');await refresh();}catch(error){message('ig-settings-message',error.message);}});
-if(token)login(token);
+function renderUsers(){ $('ig-users').innerHTML=users.map(u=>`<tr><td>${escape(u.username)}</td><td><select data-role="${u.id}">${['user','admin','super_admin'].map(r=>`<option value="${r}" ${r===u.role?'selected':''}>${{user:'用户',admin:'管理员',super_admin:'超级管理员'}[r]}</option>`).join('')}</select></td><td>${u.enabled?'启用':'禁用'}</td><td><button class="ig-button" data-user="${u.id}" data-action="toggle">${u.enabled?'禁用':'启用'}</button> <button class="ig-button" data-user="${u.id}" data-action="password">重置密码</button></td></tr>`).join(''); }
+$('ig-user-form').onsubmit=async e=>{e.preventDefault();try{await json('/api/admin/users',{method:'POST',body:JSON.stringify({username:$('ig-user-name').value,password:$('ig-user-password').value,role:$('ig-user-role').value})});$('ig-user-password').value='';$('ig-user-form').reset();message('ig-user-message','账号已创建。');await loadAdmin();}catch(error){message('ig-user-message',error.message);}};
+$('ig-users').onchange=async e=>{const id=e.target.dataset.role;if(!id)return;try{await json('/api/admin/users/'+id,{method:'PATCH',body:JSON.stringify({role:e.target.value})});await loadAdmin();await login();}catch(error){message('ig-user-message',error.message);await loadAdmin();}};
+$('ig-users').onclick=async e=>{const b=e.target.closest('[data-user]');if(!b)return;const u=users.find(u=>u.id===b.dataset.user);let body={enabled:!u.enabled};if(b.dataset.action==='password'){const password=prompt('请输入新密码（至少12位）');if(password===null)return;body={password};}try{await json('/api/admin/users/'+u.id,{method:'PATCH',body:JSON.stringify(body)});await loadAdmin();}catch(error){message('ig-user-message',error.message);}};
+$('ig-password-form').onsubmit=async e=>{e.preventDefault();try{await json('/api/auth/password',{method:'POST',body:JSON.stringify({current_password:$('ig-current-password').value,password:$('ig-new-password').value})});$('ig-password-form').reset();logout();message('frame-login-error','密码已更新，请重新登录。');}catch(error){message('ig-password-message',error.message);}};
+sessionStorage.removeItem('frame-token');
+login();
 setInterval(refresh,5000);

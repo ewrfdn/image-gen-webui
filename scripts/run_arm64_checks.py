@@ -1,6 +1,7 @@
 """Validate the exact ARM64 application image with an isolated ARM64 PostgreSQL."""
 
 import secrets
+import os
 import subprocess
 import sys
 import time
@@ -83,7 +84,7 @@ try:
             "sh",
             "--env",
             "TEST_DATABASE_URL=" + url,
-            "image-gen-platform:0.2.0",
+            os.getenv("PLATFORM_VERIFY_IMAGE", "image-gen-platform:0.3.0"),
             "-c",
             "uv sync --frozen --extra test --no-install-project && python -m pytest -q",
         ]

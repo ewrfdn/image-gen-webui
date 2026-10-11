@@ -63,3 +63,18 @@ ssh -N -L 18080:127.0.0.1:18080 local-dgx
 默认调用先入库，再等待调度与保存，成功返回200+b64_json。HTTP等待默认300秒，超时504携带X-Task-ID；业务任务继续执行。`Prefer: respond-async`扩展返回202+task ID，之后查询`GET /api/tasks/{id}`。普通SDK默认200，不把异步202冒充完全兼容。
 
 模型JSON与部署摘要分别为`MODEL_ROOT/<model_id>/model-config.json`、`artifact-manifest.json`。格式见design下的JSON Schema和样例。修改声明后会实时同步；真实推理能力仍以backend实现为准。
+# 用户与角色
+
+平台使用用户名和密码登录，不开放自行注册。只有超级管理员可以创建账号、设置角色、禁用账号和重置密码。
+
+| 角色 | 平台生成与历史 | API Key | 用户管理 |
+|---|---|---|---|
+| 用户 | 自己的任务和文件 | 无法创建，不能调用/v1 API | 无 |
+| 管理员 | 平台生成，管理任务和节点/参数 | 创建、管理自己的Key | 无 |
+| 超级管理员 | 平台生成，管理任务和节点/参数 | 创建、管理全部Key | 创建账号、角色、禁用、重置密码 |
+
+首次升级自动创建`admin`超级管理员，初始密码使用部署`.env`中的`PLATFORM_ADMIN_TOKEN`。登录后在“我的账号”修改密码；修改后所有登录会话及旧Token登录失效。初始Token的兼容接口只在此账号仍启用、保留超级管理员角色且密码未改变时有效。后续重启不会重设密码。
+
+密码使用带随机盐的scrypt哈希，登录会话存储随机Token的SHA256并使用HttpOnly、SameSite=Strict Cookie；用户被禁用时会话和API Key立即失效，管理员降为用户时其Key永久撤销。角色权限在每次请求重新检查。普通用户即使直接调用接口也无法绕过API Key限制。API Key仅用于调用接口，不能登录网页或管理账号。
+
+用户、会话和API Key归属持久化在PostgreSQL。旧Key自动归入初始化超级管理员，原任务/文件保留并迁移旧管理员归属；无需重建数据库。server镜像使用独立`SERVER_VERSION`（默认0.3.0），infra仍使用`SERVICE_VERSION`。

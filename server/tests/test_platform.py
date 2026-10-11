@@ -169,6 +169,7 @@ async def setup(tmp_path):
         async with platform.db.engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
     await platform.start()
+    await app.state.accounts.initialize()
     async with platform.db.sessions() as db:
         node = Node(
             id="node-a",
@@ -257,7 +258,16 @@ async def test_load_execute_persist_and_images_compatibility(setup):
     pending = asyncio.create_task(
         api.post("/v1/images/generations", json={"model": "test-image", "prompt": "b"})
     )
-    await asyncio.sleep(0.1)
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        async with p.db.sessions() as db:
+            waiting = (
+                await db.scalars(select(Task).where(Task.status == "pending"))
+            ).all()
+        if waiting:
+            break
+        await asyncio.sleep(0.01)
+    assert waiting, "Synchronous request must be admitted before dispatch"
     await drain(p)
     response = await pending
     assert (

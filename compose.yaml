@@ -15,7 +15,7 @@ services:
       retries: 20
     restart: unless-stopped
   server:
-    image: image-gen-platform:${SERVICE_VERSION:-0.2.0}
+    image: image-gen-platform:${SERVER_VERSION:-0.3.0}
     build:
       context: .
       dockerfile: server/Dockerfile
