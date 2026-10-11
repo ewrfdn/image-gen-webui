@@ -57,6 +57,7 @@ def configuration(checkpoint):
         or g["width_max"] > caps.max_size
         or g["height_max"] > caps.max_size
         or g["max_pixels"] > caps.max_pixels
+        or g["dimension_multiple"] <= 0
         or g["dimension_multiple"] % caps.multiple_of
         or not 1 <= g["default_steps"] <= g["steps_max"] <= 100
         or g["output_mime_types"] != ["image/png"]

@@ -132,6 +132,7 @@ class Registry:
                 and c["type"] in ("image", "video")
                 and model["revision"] == c["revision"]
                 and len(model["artifact_sha256"]) == 64
+                and model["artifact_sha256"] != "0" * 64
                 and c["artifact_sha256"] == model["artifact_sha256"]
                 and 0 <= r["min_count"] <= r["max_count"]
                 and isinstance(r["mime_types"], list)

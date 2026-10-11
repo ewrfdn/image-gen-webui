@@ -1,5 +1,7 @@
 FROM ghcr.io/astral-sh/uv:0.12.3 AS uv
 FROM python:3.12-slim
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.revision=${VCS_REF}
 COPY --from=uv /uv /usr/local/bin/uv
 WORKDIR /app/server
 ENV PYTHONUNBUFFERED=1 UV_PROJECT_ENVIRONMENT=/opt/venv PATH=/opt/venv/bin:$PATH

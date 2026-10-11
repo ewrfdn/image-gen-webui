@@ -28,13 +28,13 @@ docker compose -f compose.yaml -f compose.resources.json build
 生成离线内容摘要与模型JSON，不加载GPU模型；资源挂载沿用prepare脚本生成的只读权重路径，临时仅允许写隔离资源根目录：
 
 ```bash
-docker compose -f compose.yaml -f compose.resources.json run --rm --no-deps \
-  --volume "$HOST_MODEL_ROOT:/models:rw" inference python scripts/build_catalog.py --root /models
+docker compose -f compose.yaml -f compose.resources.json -f compose.catalog.yaml \
+  run --rm --no-deps inference
 docker compose -f compose.yaml -f compose.resources.json up -d --wait
 python3 scripts/verify_platform.py
 ```
 
-上面的HOST_MODEL_ROOT需要从.env加载，例如`set -a; . ./.env; set +a`；不要将.env内容输出到终端。首次manifest需要读取权重计算哈希，后续文件未变更时复用。原始checkpoint不移动、不改写。
+Compose自动读取.env中的HOST_MODEL_ROOT，不需要将凭证导出或输出到终端。首次manifest需要读取权重计算哈希，后续文件未变更时复用。原始checkpoint不移动、不改写。
 
 ```powershell
 ssh -N -L 18080:127.0.0.1:18080 local-dgx

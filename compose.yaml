@@ -19,6 +19,8 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
+      args:
+        VCS_REF: ${VCS_REF:-unknown}
     environment:
       DATABASE_URL: postgresql+asyncpg://image_gen:${DATABASE_PASSWORD}@database/image_gen
       PLATFORM_ADMIN_TOKEN: ${PLATFORM_ADMIN_TOKEN:?Run scripts/prepare_platform.py}
