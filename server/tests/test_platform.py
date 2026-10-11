@@ -366,6 +366,11 @@ async def test_catalog_conflict_expiry_and_invalid_inputs(setup):
     ).status_code == 400
     assert (
         await api.post(
+            "/api/tasks", json={"model": "test-image", "prompt": "a", "size": 123}
+        )
+    ).status_code == 400
+    assert (
+        await api.post(
             "/api/tasks", json={"model": "test-image", "prompt": "a", "stream": True}
         )
     ).status_code == 400

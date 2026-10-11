@@ -292,5 +292,5 @@ def valid_size(size, gen):
             and w * h <= gen["max_pixels"]
             and w % gen["dimension_multiple"] == h % gen["dimension_multiple"] == 0
         )
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError, KeyError, AttributeError):
         return False

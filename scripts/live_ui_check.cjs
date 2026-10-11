@@ -1,0 +1,36 @@
+// Read-only UI verification on the real DGX deployment; never submits generation.
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const {spawnSync}=require('child_process');
+const fs=require('fs');
+const path=require('path');
+(async()=>{
+ const command='python3 -c \'from pathlib import Path; print(next(line.split("=",1)[1] for line in (Path.home()/"work/image-gen-platform/.env").read_text().splitlines() if line.startswith("PLATFORM_ADMIN_TOKEN=")))\'';
+ const result=spawnSync('ssh',['-o','BatchMode=yes','-o','ConnectTimeout=5','local-dgx',command],{encoding:'utf8'});
+ if(result.status!==0)throw new Error('Cannot read deployment credential through authenticated SSH');
+ const token=result.stdout.trim();
+ const browser=await chromium.launch({headless:true,channel:'msedge'});
+ const page=await browser.newPage({viewport:{width:1100,height:1000}});
+ const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+ const base=process.env.PLATFORM_BASE_URL||'http://127.0.0.1:18080';
+ await page.goto(base);await page.locator('#frame-token').fill(token);await page.locator('#frame-login-form button').click();
+ await page.locator('#dgx-studio').waitFor({state:'visible'});
+ await page.waitForFunction(()=>document.querySelector('#ig-model').options.length===2);
+ const valueFor=async prefix=>page.locator('#ig-model option').evaluateAll((options,p)=>options.find(o=>o.value.startsWith(p+'|')).value,prefix);
+ await page.locator('#ig-model').selectOption(await valueFor('qwen-image-2.1'));
+ if(await page.locator('#ig-reference-field').isVisible())throw new Error('Current text-only models must not advertise reference support');
+ await page.locator('#ig-lora').selectOption('bocchi_lora_v4');
+ await page.locator('#ig-model').selectOption(await valueFor('noobai-XL-1.1'));
+ if(await page.locator('#ig-lora').inputValue()!=='')throw new Error('LoRA selection was not reset');
+ const directory=path.resolve('verification-output/live-ui');fs.mkdirSync(directory,{recursive:true});
+ await page.screenshot({path:path.join(directory,'generate.png'),fullPage:true});
+ await page.locator('[data-page="backends"]').click();await page.getByText('已连接',{exact:true}).waitFor();
+ await page.locator('summary').first().click();await page.screenshot({path:path.join(directory,'backends.png'),fullPage:true});
+ await page.locator('[data-page="keys"]').click();await page.getByText('deployment-verification',{exact:true}).first().waitFor();
+ await page.locator('[data-page="settings"]').click();await page.waitForFunction(()=>document.querySelector('#ig-max').value==='100');
+ await page.screenshot({path:path.join(directory,'settings.png'),fullPage:true});
+ await page.locator('#frame-logout').click();
+ if(await page.locator('#frame-token').inputValue()!=='')throw new Error('Logout retained access credential');
+ if(errors.length)throw new Error('UI runtime error');
+ fs.writeFileSync(path.join(directory,'report.json'),JSON.stringify({passed:true,gpu_generation_submitted:false,base_url:base,checks:['real admin login','two real models','LoRA discovery and switch isolation','reference hidden on unsupported model','connected backend JSON','key administration','persistent settings','logout'],errors},null,2));
+ await browser.close();console.log('PASS: read-only live DGX UI, no GPU generation submitted');
+})().catch(e=>{console.error(e.message);process.exit(1);});
