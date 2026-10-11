@@ -52,7 +52,16 @@ const assert=(v,m)=>{if(!v)throw new Error(m);};
    if(width!==320)await page.screenshot({path:path.join(directory,name+'-'+width+'.png'),fullPage:true});
   }
  }
+ await page.locator('[data-page="keys"]').click();await page.locator('#ig-key-name').fill('Non-admin session');await page.locator('#ig-key-form button').click();await page.locator('#ig-created-key').waitFor({state:'visible'});
+ const clientKey=await page.locator('#ig-key-value').inputValue();
+ await page.locator('#frame-logout').click();
+ assert(await page.locator('#frame-token').inputValue()==='','logout clears entered access token');
+ assert(await page.locator('#ig-key-value').inputValue()==='','logout clears one-time key');
+ await page.locator('#frame-token').fill(clientKey);await page.locator('#frame-login-form button').click();await page.locator('#dgx-studio').waitFor({state:'visible'});
+ assert(!await page.locator('[data-page="keys"]').isVisible(),'API key session has no admin navigation');
+ assert(await page.locator('[data-screen="generate"]').isVisible(),'API key login resets to generate');
+ assert(await page.locator('#ig-keys tr').count()===0,'previous admin key rows cleared');
  assert(errors.length===0,'runtime errors: '+errors.join(';'));
- fs.writeFileSync(path.join(directory,'report.json'),JSON.stringify({passed:true,checks:['live login','backend configuration','model and LoRA catalogue','reference upload and image task persistence','image preview/download','video queue','key create/revoke','queue limit','responsive layout'],errors},null,2));
+ fs.writeFileSync(path.join(directory,'report.json'),JSON.stringify({passed:true,checks:['live login','backend configuration','model and LoRA catalogue','reference upload and image task persistence','image preview/download','video queue','key create/revoke','queue limit','responsive layout','logout and API-key session isolation'],errors},null,2));
  await browser.close();console.log('PASS: live UI and real server with controlled backend');
 })().catch(e=>{console.error(e);process.exit(1);});

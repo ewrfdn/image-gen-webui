@@ -8,6 +8,7 @@ let admin = false, models = [], nodes = [], keys = [], files = [], page = 'gener
 let queueCount = 0, maxCount = 100, editNode = null, referenceUrls = [], resultUrls = [], refreshRunning = false;
 let settings = {max_count:100,refresh_seconds:5,stale_seconds:15};
 let saving = false;
+let resultVersion = 0;
 
 async function api(path, options = {}) {
   const headers = {Authorization:'Bearer '+token, ...(options.headers || {})};
@@ -26,7 +27,13 @@ function message(id,text) { $(id).textContent=text; $(id).hidden=!text; }
 function selected() { return models.find(m => m.model_id+'|'+m.revision===modelKey); }
 
 function logout() {
-  token=''; sessionStorage.removeItem('frame-token'); root.hidden=true; $('frame-login').hidden=false;
+  token=''; admin=false; models=[]; nodes=[]; keys=[]; latestTask=null; modelKey=''; resultVersion++;
+  sessionStorage.removeItem('frame-token'); root.hidden=true; $('frame-login').hidden=false;
+  $('ig-key-value').value=''; $('ig-created-key').hidden=true;
+  $('ig-node-admin').value=''; $('ig-node-inference').value='';
+  $('frame-token').value='';
+  $('ig-task-list').innerHTML=''; $('ig-result').innerHTML=''; delete $('ig-result').dataset.signature;
+  clearReferences(); renderKeys(); renderNodes(); navigate('generate');
   resultUrls.forEach(URL.revokeObjectURL); resultUrls=[];
 }
 async function login(value) {
@@ -96,13 +103,14 @@ $('ig-generate-form').addEventListener('submit',async e=>{
 });
 async function showResult(task){
   if($('ig-result').dataset.signature===task.id+'|'+task.status)return;
+  const version=++resultVersion;
   $('ig-result').dataset.signature=task.id+'|'+task.status;
   resultUrls.forEach(URL.revokeObjectURL);resultUrls=[];
   $('ig-result').innerHTML=`<strong>${escape(taskName[task.status])}</strong><span class="ig-caption">${escape(task.id)}</span>`;
   if(task.wait_reason){const span=document.createElement('span');span.textContent=statusName[task.wait_reason]||task.wait_reason;$('ig-result').append(span);}
   if(task.error){const span=document.createElement('span');span.className='ig-error';span.textContent=task.error;$('ig-result').append(span);}
   for(const file of task.files){
-    const blob=await (await api(file.url)).blob();const url=URL.createObjectURL(blob);resultUrls.push(url);
+    const blob=await (await api(file.url)).blob();if(version!==resultVersion)return;const url=URL.createObjectURL(blob);resultUrls.push(url);
     const media=document.createElement(file.mime.startsWith('video/')?'video':'img');media.src=url;media.style.maxWidth='100%';media.style.maxHeight='500px';if(media.tagName==='VIDEO')media.controls=true;else media.alt='生成结果';
     const link=document.createElement('a');link.className='ig-button';link.href=url;link.download=file.storage_key.split('/').pop();link.textContent='下载'+(file.mime.startsWith('video/')?'视频':'图片');
     $('ig-result').append(media,link);
@@ -112,18 +120,19 @@ async function showResult(task){
 function renderTasks(tasks){
   $('ig-task-list').innerHTML=tasks.slice(0,8).map(t=>`<button type="button" class="ig-task-row ig-history" data-task="${escape(t.id)}"><span>${escape(t.model_id)} · ${t.id.slice(0,8)}</span><span>${taskName[t.status]}</span></button>`).join('');
   if(!latestTask&&tasks.length)latestTask=tasks[0].id;
-  const task=tasks.find(t=>t.id===latestTask);if(task)showResult(task).catch(error=>message('ig-submit-error',error.message));
+  const task=tasks.find(t=>t.id===latestTask);if(task)showResult(task).catch(error=>{delete $('ig-result').dataset.signature;message('ig-submit-error',error.message);});
 }
 $('ig-task-list').onclick=e=>{const button=e.target.closest('[data-task]');if(button){latestTask=button.dataset.task;refresh();}};
 
 function navigate(name){page=name;root.querySelectorAll('[data-screen]').forEach(e=>e.hidden=e.dataset.screen!==name);root.querySelectorAll('[data-page]').forEach(e=>e.setAttribute('aria-pressed',String(e.dataset.page===name)));loadAdmin().catch(error=>message('ig-backend-message',error.message));}
 root.querySelector('.ig-nav').onclick=e=>{const button=e.target.closest('[data-page]');if(button)navigate(button.dataset.page);};
-async function refresh(){if(!token||refreshRunning)return;refreshRunning=true;try{const [catalog,history]=await Promise.all([json('/api/models'),json('/api/tasks')]);models=catalog.models;queueCount=catalog.queue_count;maxCount=catalog.max_count;renderModels();renderTasks(history.tasks);if(page==='backends')await loadAdmin();}catch(error){message('ig-submit-error',error.message);}finally{refreshRunning=false;}}
+async function refresh(){if(!token||refreshRunning)return;refreshRunning=true;const sessionToken=token;try{const [catalog,history]=await Promise.all([json('/api/models'),json('/api/tasks')]);if(sessionToken!==token)return;models=catalog.models;queueCount=catalog.queue_count;maxCount=catalog.max_count;renderModels();renderTasks(history.tasks);if(page==='backends')await loadAdmin();}catch(error){if(sessionToken===token)message('ig-submit-error',error.message);}finally{refreshRunning=false;}}
 async function loadAdmin(){
   if(!admin)return;
-  if(page==='backends'){nodes=(await json('/api/admin/backends')).nodes;renderNodes();}
-  if(page==='keys'){keys=(await json('/api/admin/keys')).keys;renderKeys();}
-  if(page==='settings'){settings=await json('/api/admin/settings');$('ig-max').value=settings.max_count;$('ig-refresh').value=settings.refresh_seconds;$('ig-stale').value=settings.stale_seconds;}
+  const requestedPage=page, sessionToken=token;
+  if(page==='backends'){const result=await json('/api/admin/backends');if(token!==sessionToken||page!==requestedPage)return;nodes=result.nodes;renderNodes();}
+  if(page==='keys'){const result=await json('/api/admin/keys');if(token!==sessionToken||page!==requestedPage)return;keys=result.keys;renderKeys();}
+  if(page==='settings'){const result=await json('/api/admin/settings');if(token!==sessionToken||page!==requestedPage)return;settings=result;$('ig-max').value=settings.max_count;$('ig-refresh').value=settings.refresh_seconds;$('ig-stale').value=settings.stale_seconds;}
 }
 function renderNodes(){
   $('ig-nodes').innerHTML=nodes.map(n=>`<article class="ig-node"><div class="ig-node-head"><div><div class="ig-node-title"><strong>${escape(n.name)}</strong><span class="ig-pill">${!n.enabled?'已禁用':n.quarantined?'执行结果待确认':n.connected?'已连接':'连接失败'}</span></div><div class="ig-note">${escape(n.id)} · ${escape(n.base_url)}</div><div class="ig-note">${n.models.length} 个模型 / ${n.models.reduce((s,m)=>s+m.loras.length,0)} 个 LoRA${n.error?' · '+escape(n.error):''}</div></div><div class="ig-node-controls"><button class="ig-button" data-action="sync" data-node="${n.id}">立即同步</button><button class="ig-button" data-action="edit" data-node="${n.id}">编辑</button><button class="ig-button" data-action="toggle" data-node="${n.id}">${n.enabled?'禁用':'启用'}</button></div></div><details><summary>查看模型、LoRA 与配置 JSON</summary>${n.models.map(m=>`<h3>${escape(m.model_id)}</h3><p class="ig-note">LoRA：${escape(m.loras.map(l=>l.display_name||l.lora_id).join('、')||'无')}</p><pre><code>${escape(JSON.stringify(m.configuration,null,2))}</code></pre>`).join('')||'<p class="ig-note">暂无有效模型配置</p>'}</details></article>`).join('');
