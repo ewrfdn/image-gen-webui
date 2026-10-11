@@ -2,6 +2,7 @@
 
 import hmac
 import uuid
+import asyncio
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -11,6 +12,7 @@ from ..config import Settings
 from ..engine.registry import valid_id
 from ..engine.service import Engine, ServiceError
 from ..schemas import GenerationRequest, GenerationResponse, LifecycleResponse
+from ..engine.catalog import catalogue, configuration
 
 
 def create_app(settings: Settings | None = None, backend_factory=None) -> FastAPI:
@@ -110,6 +112,10 @@ def create_app(settings: Settings | None = None, backend_factory=None) -> FastAP
     async def internal_models(loaded: bool = False):
         return engine.snapshot(loaded)
 
+    @app.get("/internal/v1/catalog", dependencies=[Depends(admin_auth)])
+    async def catalog():
+        return await asyncio.to_thread(catalogue, engine)
+
     @app.post("/internal/v1/models/{model_id}/load", dependencies=[Depends(admin_auth)],
               response_model=LifecycleResponse)
     async def load(model_id: str):
@@ -131,7 +137,19 @@ def create_app(settings: Settings | None = None, backend_factory=None) -> FastAP
     @app.post("/v1/images/generations", dependencies=[Depends(infer_auth)],
               response_model=GenerationResponse)
     async def generate(payload: GenerationRequest, request: Request):
+        if payload.expected_revision:
+            checkpoint = engine.registry.checkpoints().get(payload.model)
+            try:
+                config = configuration(checkpoint) if checkpoint else None
+                if (config is None or config['revision'] != payload.expected_revision
+                    or (payload.expected_artifact_sha256 and config['artifact_sha256'] != payload.expected_artifact_sha256)):
+                    raise ValueError('revision_mismatch')
+            except (ValueError, KeyError, OSError):
+                raise ServiceError(409, 'resource_changed', 'Requested model revision is not available')
         result = await engine.generate(payload)
+        if payload.expected_revision:
+            result['metadata']['model_revision'] = payload.expected_revision
+            result['metadata']['model_artifact_sha256'] = payload.expected_artifact_sha256
         result["metadata"]["request_id"] = request.state.request_id
         return result
 

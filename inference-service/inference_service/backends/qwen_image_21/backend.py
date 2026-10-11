@@ -9,6 +9,33 @@ from ...schemas import GenerationRequest
 from ..base import CleanupFailed, LoraIncompatible, UnsupportedParameter
 
 
+def validated_lora_state(pipe, lora: Lora) -> dict:
+    state = pipe.lora_state_dict(str(lora.path.parent), weight_name=lora.path.name,
+                                 use_safetensors=True, local_files_only=True)
+    pairs = {}
+    for key, tensor in state.items():
+        if not key.startswith("transformer."):
+            raise ValueError(f"Unsupported LoRA component: {key}")
+        name = key.removeprefix("transformer.")
+        kind = next((kind for kind in ("A", "B") if name.endswith(f".lora_{kind}.weight")), None)
+        if kind is None or len(tensor.shape) != 2:
+            raise ValueError(f"Unsupported LoRA tensor: {key}")
+        module_name = name.removesuffix(f".lora_{kind}.weight")
+        module = pipe.transformer.get_submodule(module_name)
+        if not hasattr(module, "weight") or len(module.weight.shape) != 2:
+            raise ValueError(f"Unsupported LoRA module: {module_name}")
+        pairs.setdefault(module_name, {})[kind] = tensor
+    if not pairs:
+        raise ValueError("LoRA contains no transformer adapters")
+    for name, pair in pairs.items():
+        if set(pair) != {"A", "B"}:
+            raise ValueError(f"Incomplete LoRA pair: {name}")
+        out_features, in_features = pipe.transformer.get_submodule(name).weight.shape
+        if pair["A"].shape[1] != in_features or pair["B"].shape[0] != out_features or pair["A"].shape[0] != pair["B"].shape[1]:
+            raise ValueError(f"Incompatible LoRA dimensions: {name}")
+    return state
+
+
 class QwenImage21Backend:
     def __init__(self, device: str, dtype: str, model_offload: str = "none"):
         self.device = device
@@ -63,8 +90,8 @@ class QwenImage21Backend:
             if lora:
                 adapter_attempted = True
                 try:
-                    pipe.load_lora_weights(str(lora.path.parent), weight_name=lora.path.name,
-                                           adapter_name="request")
+                    state = validated_lora_state(pipe, lora)
+                    pipe.load_lora_weights(state, adapter_name="request")
                     pipe.set_adapters(["request"], adapter_weights=[request.loras[0].scale])
                     if not hasattr(pipe, "get_active_adapters") or "request" not in pipe.get_active_adapters():
                         raise RuntimeError("LoRA adapter was not activated")

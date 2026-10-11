@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Infra model configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "model_id", "display_name", "revision", "artifact_sha256", "type", "architecture", "reference", "lora", "generation"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "model_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "display_name": {"type": "string", "minLength": 1},
+    "revision": {"type": "string", "minLength": 1, "maxLength": 128},
+    "artifact_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "type": {"enum": ["image", "video"]},
+    "architecture": {"type": "string", "minLength": 1},
+    "reference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["supported", "mime_types", "min_count", "max_count", "max_file_bytes"],
+      "properties": {
+        "supported": {"type": "boolean"},
+        "mime_types": {"type": "array", "uniqueItems": true, "items": {"enum": ["image/png", "image/jpeg", "image/webp", "video/mp4"]}},
+        "min_count": {"type": "integer", "minimum": 0},
+        "max_count": {"type": "integer", "minimum": 0},
+        "max_file_bytes": {"type": "integer", "minimum": 0}
+      },
+      "allOf": [{"if": {"properties": {"supported": {"const": false}}}, "then": {"properties": {"mime_types": {"maxItems": 0}, "min_count": {"const": 0}, "max_count": {"const": 0}, "max_file_bytes": {"const": 0}}}, "else": {"properties": {"mime_types": {"minItems": 1}, "max_count": {"minimum": 1}, "max_file_bytes": {"minimum": 1}}}}]
+    },
+    "lora": {
+      "type": "object", "additionalProperties": false,
+      "required": ["supported", "max_count"],
+      "properties": {"supported": {"type": "boolean"}, "max_count": {"type": "integer", "minimum": 0, "maximum": 1}},
+      "allOf": [{"if": {"properties": {"supported": {"const": false}}}, "then": {"properties": {"max_count": {"const": 0}}}, "else": {"properties": {"max_count": {"const": 1}}}}]
+    },
+    "generation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["default_size", "width_min", "width_max", "height_min", "height_max", "dimension_multiple", "max_pixels", "default_steps", "steps_max", "default_guidance_scale", "output_mime_types", "timeout_seconds"],
+      "properties": {
+        "default_size": {"type": "string", "pattern": "^[0-9]+x[0-9]+$"},
+        "width_min": {"type": "integer", "minimum": 1}, "width_max": {"type": "integer", "minimum": 1},
+        "height_min": {"type": "integer", "minimum": 1}, "height_max": {"type": "integer", "minimum": 1},
+        "dimension_multiple": {"type": "integer", "minimum": 1}, "max_pixels": {"type": "integer", "minimum": 1},
+        "default_steps": {"type": "integer", "minimum": 1}, "steps_max": {"type": "integer", "minimum": 1},
+        "default_guidance_scale": {"type": "number", "minimum": 0},
+        "output_mime_types": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["image/png", "image/jpeg", "image/webp", "video/mp4"]}},
+        "timeout_seconds": {"type": "integer", "minimum": 1},
+        "video": {"type": "object", "additionalProperties": false, "required": ["default_duration_seconds", "max_duration_seconds", "fps"], "properties": {"default_duration_seconds": {"type": "number", "exclusiveMinimum": 0}, "max_duration_seconds": {"type": "number", "exclusiveMinimum": 0}, "fps": {"type": "integer", "minimum": 1}}}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"type": {"const": "video"}}},
+      "then": {
+        "properties": {
+          "generation": {
+            "required": ["video"],
+            "properties": {"output_mime_types": {"items": {"const": "video/mp4"}}}
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "generation": {
+            "not": {"required": ["video"]},
+            "properties": {"output_mime_types": {"items": {"enum": ["image/png", "image/jpeg", "image/webp"]}}}
+          }
+        }
+      }
+    }
+  ]
+}

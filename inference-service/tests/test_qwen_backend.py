@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from inference_service.backends.base import CleanupFailed, UnsupportedParameter
+from inference_service.backends.base import CleanupFailed, LoraIncompatible, UnsupportedParameter
 from inference_service.backends.factory import create_backend
 from inference_service.backends.qwen_image_21.backend import QwenImage21Backend
 from inference_service.config import Settings
@@ -109,6 +109,16 @@ class FakePipe:
         self.events = []
         self.active = []
         self.fail_reset = False
+        self.transformer = SimpleNamespace(get_submodule=self.get_submodule)
+
+    def get_submodule(self, name):
+        if name != "attn.to_q":
+            raise AttributeError(name)
+        return SimpleNamespace(weight=SimpleNamespace(shape=(4, 3)))
+
+    def lora_state_dict(self, *args, **kwargs):
+        return {"transformer.attn.to_q.lora_A.weight": SimpleNamespace(shape=(2, 3)),
+                "transformer.attn.to_q.lora_B.weight": SimpleNamespace(shape=(4, 2))}
 
     def to(self, device):
         self.device = device
@@ -126,7 +136,7 @@ class FakePipe:
             raise RuntimeError("reset failed")
         self.active = []
 
-    def load_lora_weights(self, path, weight_name, adapter_name):
+    def load_lora_weights(self, path, weight_name=None, adapter_name=None):
         self.events.append("load")
 
     def set_adapters(self, names, adapter_weights):
@@ -218,3 +228,20 @@ def test_qwen_failed_gpu_transfer_keeps_pipeline_for_cleanup(project, monkeypatc
     assert backend.pipeline is pipe
     backend.unload()
     assert backend.pipeline is None
+
+
+@pytest.mark.parametrize("bad_key,shape", [("unknown.lora_B.weight", (4, 2)), ("attn.to_q.lora_B.weight", (5, 2))])
+def test_qwen_rejects_partial_or_wrong_shape_lora(monkeypatch, tmp_path, bad_key, shape):
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+    pipe = FakePipe()
+    pipe.lora_state_dict = lambda *args, **kwargs: {
+        "transformer.attn.to_q.lora_A.weight": SimpleNamespace(shape=(2, 3)),
+        "transformer." + bad_key: SimpleNamespace(shape=shape)}
+    backend = QwenImage21Backend("cpu", "float32")
+    backend.pipeline = pipe
+    request = GenerationRequest(model="qwen", prompt="test", loras=[{"lora_id": "style"}])
+    with pytest.raises(LoraIncompatible):
+        backend.generate(request, Lora("qwen", "style", tmp_path / "style.safetensors", "test"), 1)
+    assert "load" not in pipe.events
+    assert pipe.events == ["reset", "reset"]
+    assert pipe.calls == []

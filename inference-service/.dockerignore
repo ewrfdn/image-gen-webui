@@ -1,0 +1,12 @@
+.venv
+.env
+.env.*
+!.env.example
+__pycache__
+.pytest_cache
+*.egg-info
+*.log
+*.png
+verification-output
+compose.resources.json
+compose.resources.yaml

@@ -35,7 +35,9 @@ def _manifest_fingerprint(path: Path, root: Path) -> str:
     entries = []
     for item in sorted(path.rglob("*")):
         parts = item.relative_to(path).parts
-        if item.is_file() and _inside(item, root) and "loras" not in parts and not any(part.startswith(".") for part in parts):
+        if (item.is_file() and _inside(item, root) and "loras" not in parts
+            and item.name not in {"model-config.json", "artifact-manifest.json"}
+            and not any(part.startswith(".") for part in parts)):
             stat = item.stat()
             entries.append((str(item.relative_to(path)), stat.st_size, stat.st_mtime_ns))
     return hashlib.sha256(json.dumps(entries, separators=(",", ":")).encode()).hexdigest()

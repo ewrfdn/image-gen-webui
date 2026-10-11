@@ -1,0 +1,30 @@
+name: image-gen-inference-dev
+services:
+  inference:
+    image: image-gen-inference:${SERVICE_VERSION:-0.1.0}-dev
+    build:
+      context: .
+      target: dev
+      args:
+        SERVICE_VERSION: ${SERVICE_VERSION:-0.1.0}
+        VCS_REF: ${VCS_REF:-unknown}
+        CUDA_BASE: ${CUDA_BASE:-nvidia/cuda:13.3.1-cudnn-runtime-ubuntu24.04}
+    gpus: all
+    init: true
+    shm_size: 2gb
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${INFERENCE_PORT:-18001}:8000"
+    environment:
+      MODEL_ROOT: /models
+      INFERENCE_TOKEN: ${INFERENCE_TOKEN:?Set INFERENCE_TOKEN in .env}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN in .env}
+      DEVICE: cuda:0
+      DTYPE: ${DTYPE:-bfloat16}
+      MODEL_OFFLOAD: ${MODEL_OFFLOAD:-none}
+      INSTANCE_ID: ${INSTANCE_ID:-local-dgx-dev}
+    volumes:
+      - "${HOST_MODEL_ROOT:?Set HOST_MODEL_ROOT in .env}:/models:ro"
+      - ./inference_service:/app/inference_service:ro
+      - ./scripts:/app/scripts:ro
+      - ./verification-output:/artifacts
+    restart: unless-stopped

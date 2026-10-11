@@ -1,0 +1,7 @@
+{
+  "lora_id": "style-v1",
+  "display_name": "风格 LoRA（设计样例）",
+  "revision": "example-lora-r1",
+  "base_model_revision": "example-r1",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+}

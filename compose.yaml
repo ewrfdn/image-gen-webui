@@ -1,0 +1,61 @@
+name: image-gen-platform
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: image_gen
+      POSTGRES_USER: image_gen
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?Run scripts/prepare_platform.py}
+    volumes:
+      - platform-db:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U image_gen -d image_gen"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  server:
+    image: image-gen-platform:${SERVICE_VERSION:-0.2.0}
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://image_gen:${DATABASE_PASSWORD}@database/image_gen
+      PLATFORM_ADMIN_TOKEN: ${PLATFORM_ADMIN_TOKEN:?Run scripts/prepare_platform.py}
+      PLATFORM_ENCRYPTION_KEY: ${PLATFORM_ENCRYPTION_KEY:?Run scripts/prepare_platform.py}
+      DATA_ROOT: /data
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PLATFORM_PORT:-18080}:8000"
+    volumes:
+      - ./platform-data:/data
+    depends_on:
+      database:
+        condition: service_healthy
+      inference:
+        condition: service_healthy
+    restart: unless-stopped
+  inference:
+    image: image-gen-inference:${SERVICE_VERSION:-0.2.0}
+    build:
+      context: ./inference-service
+      dockerfile: Dockerfile.platform
+      args:
+        SERVICE_VERSION: ${SERVICE_VERSION:-0.2.0}
+        VCS_REF: ${VCS_REF:-unknown}
+        INFERENCE_BASE: ${INFERENCE_BASE:-image-gen-inference:0.1.0-dev}
+    gpus: all
+    init: true
+    shm_size: 2gb
+    environment:
+      MODEL_ROOT: /models
+      INFERENCE_TOKEN: ${INFERENCE_TOKEN:?Run scripts/prepare_platform.py}
+      ADMIN_TOKEN: ${INFERENCE_ADMIN_TOKEN:?Run scripts/prepare_platform.py}
+      DEVICE: cuda:0
+      DTYPE: bfloat16
+      MODEL_OFFLOAD: none
+      INSTANCE_ID: local-dgx
+    volumes:
+      - "${HOST_MODEL_ROOT:?Run scripts/prepare_platform.py}:/models:ro"
+    restart: unless-stopped
+volumes:
+  platform-db:

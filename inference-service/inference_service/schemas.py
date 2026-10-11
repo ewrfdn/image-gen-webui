@@ -11,6 +11,9 @@ class LoraSelection(BaseModel):
 class GenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model: str = Field(min_length=1, max_length=128)
+    expected_revision: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_artifact_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    expected_lora_sha256: dict[str, str] = Field(default_factory=dict)
     prompt: str = Field(min_length=1, max_length=4000)
     size: str = "1024x1024"
     n: Literal[1] = 1
@@ -42,6 +45,7 @@ class AppliedLora(BaseModel):
 class GenerationMetadata(BaseModel):
     request_id: str
     model_revision: str
+    model_artifact_sha256: str | None = None
     seed: int
     loras: list[AppliedLora]
     inference_ms: int
