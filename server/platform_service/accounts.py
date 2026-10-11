@@ -9,13 +9,11 @@ from datetime import timedelta
 from urllib.parse import urlsplit
 
 from fastapi import Depends, Request, Response
-from sqlalchemy import delete, func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import delete, select, update
 
 from .db import ApiKey, LoginSession, MediaFile, Setting, Task, User, now
 from .service import ApiError
 
-ROLES = {"user", "admin", "super_admin"}
 COOKIE = "frame_session"
 
 
@@ -283,111 +281,8 @@ class Accounts:
             response.delete_cookie(COOKIE)
             return {"status": "password_changed"}
 
-        @app.get("/api/admin/users")
-        async def users(identity=Depends(super_admin)):
-            async with self.platform.db.sessions() as db:
-                return {
-                    "users": [
-                        user_view(u)
-                        for u in (
-                            await db.scalars(select(User).order_by(User.created_at))
-                        ).all()
-                    ]
-                }
+        from .users import install_users
 
-        @app.post("/api/admin/users", status_code=201)
-        async def create_user(request: Request, identity=Depends(super_admin)):
-            body = await object_body(request)
-            username = validate_account(body.get("username"), body.get("password"))
-            role = body.get("role", "user")
-            if (
-                not isinstance(role, str)
-                or role not in ROLES
-                or set(body) - {"username", "password", "role"}
-            ):
-                raise ApiError(400, "invalid_user", "Invalid account fields or role")
-            async with self.platform.db.sessions() as db:
-                user = User(
-                    username=username,
-                    password_hash=await asyncio.to_thread(
-                        password_hash, body["password"]
-                    ),
-                    role=role,
-                )
-                db.add(user)
-                try:
-                    await db.commit()
-                except IntegrityError:
-                    await db.rollback()
-                    raise ApiError(
-                        409, "username_taken", "Username is already registered"
-                    ) from None
-                return user_view(user)
-
-        @app.patch("/api/admin/users/{user_id}")
-        async def edit_user(
-            user_id: str, request: Request, identity=Depends(super_admin)
-        ):
-            body = await object_body(request)
-            if (
-                not body
-                or set(body) - {"role", "enabled", "password"}
-                or (
-                    "role" in body
-                    and (not isinstance(body["role"], str) or body["role"] not in ROLES)
-                )
-                or ("enabled" in body and not isinstance(body["enabled"], bool))
-            ):
-                raise ApiError(400, "invalid_user", "Invalid account update")
-            async with self.platform.db.sessions() as db:
-                # Singleton row lock serializes last-super-admin protection.
-                await db.scalar(
-                    select(Setting).where(Setting.id == 1).with_for_update()
-                )
-                user = await db.get(User, user_id)
-                if not user:
-                    raise ApiError(404, "user_not_found", "User not found")
-                if (
-                    user.enabled
-                    and user.role == "super_admin"
-                    and (
-                        body.get("enabled") is False
-                        or body.get("role", user.role) != "super_admin"
-                    )
-                ):
-                    count = await db.scalar(
-                        select(func.count())
-                        .select_from(User)
-                        .where(User.enabled.is_(True), User.role == "super_admin")
-                    )
-                    if count <= 1:
-                        raise ApiError(
-                            409,
-                            "last_super_admin",
-                            "Keep at least one active super administrator",
-                        )
-                if "password" in body:
-                    validate_account(user.username, body["password"])
-                    user.password_hash = await asyncio.to_thread(
-                        password_hash, body["password"]
-                    )
-                    await db.execute(
-                        delete(LoginSession).where(LoginSession.user_id == user.id)
-                    )
-                for field in ("role", "enabled"):
-                    if field in body:
-                        setattr(user, field, body[field])
-                if not user.enabled or user.role == "user":
-                    await db.execute(
-                        update(ApiKey)
-                        .where(ApiKey.user_id == user.id)
-                        .values(enabled=False, revoked=True)
-                    )
-                if not user.enabled:
-                    await db.execute(
-                        delete(LoginSession).where(LoginSession.user_id == user.id)
-                    )
-                await db.commit()
-                return user_view(user)
+        install_users(app, self.platform, super_admin)
 
         return super_admin

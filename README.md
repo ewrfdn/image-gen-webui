@@ -65,6 +65,10 @@ ssh -N -L 18080:127.0.0.1:18080 local-dgx
 模型JSON与部署摘要分别为`MODEL_ROOT/<model_id>/model-config.json`、`artifact-manifest.json`。格式见design下的JSON Schema和样例。修改声明后会实时同步；真实推理能力仍以backend实现为准。
 # 用户与角色
 
+推理页面位于`/`，管理后台位于`/admin`。管理员/超级管理员通过“管理后台”入口配置节点、管理API Key和系统参数；超级管理员还可搜索、分页查看、创建和编辑用户，或重置密码。普通用户没有后台入口，直接访问`/admin`或管理API会被服务器拒绝。未登录访问后台会跳转登录，管理员登录后返回后台。
+
+用户管理后端参考本机`D:/project/FDE/api/src/controllers/users.py`、`services/user_service.py`、`schemas/user.py`及`security/dependencies.py`，采用独立UserService、Pydantic请求校验、权限依赖、分页和用户名冲突处理。遵循本项目约定，用户管理只向超级管理员开放；不复制FDE的workspace、头像或JWT流程。
+
 平台使用用户名和密码登录，不开放自行注册。只有超级管理员可以创建账号、设置角色、禁用账号和重置密码。
 
 | 角色 | 平台生成与历史 | API Key | 用户管理 |

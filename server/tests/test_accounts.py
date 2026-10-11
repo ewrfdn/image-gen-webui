@@ -238,3 +238,72 @@ async def test_existing_key_table_upgrade(tmp_path):
             assert len((await db.scalars(select(User))).all()) == 1
     finally:
         await p.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_page_node_permissions_and_user_pagination(setup):
+    _, api, _ = setup
+    await account(api, "node-manager", "admin")
+    await account(api, "page-user")
+    manager = await login(api, "node-manager")
+    user = await login(api, "page-user")
+    try:
+        assert (await manager.get("/admin")).status_code == 200
+        assert (await user.get("/admin")).status_code == 403
+        anonymous = httpx.AsyncClient(
+            transport=api._transport, base_url="http://platform"
+        )
+        try:
+            response = await anonymous.get("/admin")
+            assert (
+                response.status_code == 303
+                and response.headers["location"] == "/?next=/admin"
+            )
+        finally:
+            await anonymous.aclose()
+        body = {
+            "name": "managed node",
+            "base_url": "http://managed",
+            "admin_token": "admin",
+            "inference_token": "infer",
+        }
+        assert (await user.post("/api/admin/backends", json=body)).status_code == 403
+        response = await manager.post("/api/admin/backends", json=body)
+        assert response.status_code == 200
+        node_id = response.json()["id"]
+        assert (
+            await manager.put(
+                "/api/admin/backends/" + node_id, json={**body, "enabled": False}
+            )
+        ).status_code == 200
+        for name in ["paged-a", "paged-b", "paged-c"]:
+            await account(api, name)
+        first = (await api.get("/api/admin/users?limit=2&q=paged-")).json()
+        second = (await api.get("/api/admin/users?limit=2&offset=2&q=paged-")).json()
+        assert (
+            first["total"] == 3
+            and len(first["users"]) == 2
+            and len(second["users"]) == 1
+        )
+        assert {u["id"] for u in first["users"]}.isdisjoint(
+            {u["id"] for u in second["users"]}
+        )
+        target = second["users"][0]
+        assert (await api.get("/api/admin/users/" + target["id"])).status_code == 200
+        assert (
+            await api.patch(
+                "/api/admin/users/" + target["id"], json={"username": "Renamed-User"}
+            )
+        ).json()["username"] == "renamed-user"
+        assert (
+            await api.patch(
+                "/api/admin/users/" + target["id"], json={"username": "NODE-MANAGER"}
+            )
+        ).status_code == 409
+        assert (
+            await api.patch("/api/admin/users/" + target["id"], json={"enabled": None})
+        ).status_code == 400
+        assert (await api.get("/api/admin/users?limit=101")).status_code == 400
+    finally:
+        await manager.aclose()
+        await user.aclose()

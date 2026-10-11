@@ -14,14 +14,14 @@ const fs=require('fs'),path=require('path'),crypto=require('crypto');
  async function signIn(page,name,secret){page.on('pageerror',e=>errors.push(String(e)));await page.goto(base);await page.locator('#frame-username').fill(name);await page.locator('#frame-password').fill(secret);await page.locator('#frame-login-form button').click();await page.locator('#dgx-studio').waitFor({state:'visible'});}
  try{
   await signIn(superPage,'admin',credential.stdout.trim());
-  await superPage.locator('[data-page="users"]').click();
+  await superPage.goto(base+'/admin#users');await superPage.locator('#dgx-studio').waitFor({state:'visible'});await superPage.locator('[data-page="users"]').click();
   for(const role of ['user','admin']){
    await superPage.locator('#ig-user-name').fill('verify-'+role+'-'+suffix);await superPage.locator('#ig-user-password').fill(password);await superPage.locator('#ig-user-role').selectOption(role);
    const posted=superPage.waitForResponse(r=>r.url().endsWith('/api/admin/users')&&r.request().method()==='POST');await superPage.locator('#ig-user-form button').click();
    const response=await posted;requireValue(response.status()===201,'super admin creates '+role);accounts.push(await response.json());
   }
   const managerContext=await browser.newContext(),managerPage=await managerContext.newPage();await signIn(managerPage,accounts[1].username,password);
-  requireValue(!await managerPage.locator('[data-page="users"]').isVisible(),'admin cannot manage users');
+  await managerPage.goto(base+'/admin');await managerPage.locator('#dgx-studio').waitFor({state:'visible'});requireValue(!await managerPage.locator('[data-page="users"]').isVisible(),'admin cannot manage users');
   await managerPage.locator('[data-page="keys"]').click();await managerPage.locator('#ig-key-name').fill('live-account-verification');
   const keyResponse=managerPage.waitForResponse(r=>r.url().endsWith('/api/admin/keys')&&r.request().method()==='POST');await managerPage.locator('#ig-key-form button').click();const key=await (await keyResponse).json();
   const keyHeaders={Authorization:'Bearer '+key.key};requireValue((await managerPage.request.get(base+'/v1/models',{headers:keyHeaders})).status()===200,'admin API Key works');

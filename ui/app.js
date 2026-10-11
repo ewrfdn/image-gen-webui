@@ -5,7 +5,13 @@ const statusName = {available:'可生成',need_load:'需要加载',busy:'等待�
 const taskName = {pending:'等待调度',processing:'准备生成',loading:'加载模型',submitted:'正在生成',running:'正在生成',persisting:'保存结果',succeeded:'已完成',failed:'失败',unknown:'结果未知'};
 let token = '';
 let superAdmin = false, users = [];
-let admin = false, models = [], nodes = [], keys = [], files = [], page = 'generate', modelKey = '', latestTask = null;
+const adminSurface = location.pathname.replace(/\/$/,'')==='/admin';
+const adminPages = ['backends','keys','users','settings'];
+let userOffset=0, userTotal=0, userSearch='';
+let userFetchVersion=0;
+let admin = false, models = [], nodes = [], keys = [], files = [], page = adminSurface?'backends':'generate', modelKey = '', latestTask = null;
+root.classList.toggle('ig-admin',adminSurface);
+document.title=adminSurface?'FRAME 管理后台':'FRAME 推理平台';
 let queueCount = 0, maxCount = 100, editNode = null, referenceUrls = [], resultUrls = [], refreshRunning = false;
 let settings = {max_count:100,refresh_seconds:5,stale_seconds:15};
 let saving = false;
@@ -34,18 +40,32 @@ function logout() {
   $('ig-node-admin').value=''; $('ig-node-inference').value='';
   $('frame-password').value=''; $('ig-user-password').value=''; $('ig-users').innerHTML='';
   $('ig-password-form').reset(); $('frame-identity').textContent='';
+  $('ig-user-dialog').close(); $('ig-user-edit-form').reset(); userOffset=0; userTotal=0; userSearch=''; $('ig-user-search').value='';
   $('ig-task-list').innerHTML=''; $('ig-result').innerHTML=''; delete $('ig-result').dataset.signature;
   clearReferences(); renderKeys(); renderNodes(); navigate('generate');
   resultUrls.forEach(URL.revokeObjectURL); resultUrls=[];
 }
 async function login() {
   try {
-    const identity=await json('/api/session'); token=identity.user_id+'|'+Math.random(); permissions(identity);
+    const identity=await json('/api/session');
+    if(adminSurface&&!identity.admin){location.replace('/');return;}
+    if(!adminSurface&&new URLSearchParams(location.search).get('next')==='/admin'&&identity.admin){location.replace('/admin');return;}
+    token=identity.user_id+'|'+Math.random(); permissions(identity);
     $('frame-password').value=''; $('frame-login').hidden=true; root.hidden=false;
+    if(adminSurface)navigate(adminPages.includes(location.hash.slice(1))?location.hash.slice(1):'backends');
     await refresh();
   } catch (error) { message('frame-login-error',error.message); }
 }
-function permissions(identity){admin=identity.admin;superAdmin=identity.role==='super_admin';$('frame-identity').textContent=identity.username+' · '+({user:'用户',admin:'管理员',super_admin:'超级管理员'}[identity.role]);if(!admin)$('ig-cluster-foot').textContent='模型与 LoRA 自动同步';root.querySelectorAll('[data-page]').forEach(button=>button.hidden=button.dataset.page==='users'?!superAdmin:!['generate','account'].includes(button.dataset.page)&&!admin);if((page==='users'&&!superAdmin)||(!['generate','account'].includes(page)&&!admin))navigate('generate');}
+function permissions(identity){
+  admin=identity.admin;superAdmin=identity.role==='super_admin';
+  if(adminSurface&&!admin){location.replace('/');return;}
+  $('frame-identity').textContent=identity.username+' · '+({user:'用户',admin:'管理员',super_admin:'超级管理员'}[identity.role]);
+  $('frame-admin-link').hidden=adminSurface||!admin;$('frame-studio-link').hidden=!adminSurface;
+  $('frame-brand').textContent=adminSurface?'FRAME / 管理后台':'FRAME / 推理平台';
+  if(!admin)$('ig-cluster-foot').textContent='模型与 LoRA 自动同步';
+  root.querySelectorAll('[data-page]').forEach(button=>button.hidden=adminSurface?(button.dataset.page==='users'?!superAdmin:!adminPages.includes(button.dataset.page)):!['generate','account'].includes(button.dataset.page));
+  if(adminSurface&&page==='users'&&!superAdmin)navigate('backends');
+}
 $('frame-login-form').addEventListener('submit',async e=>{e.preventDefault();try{await json('/api/auth/login',{method:'POST',body:JSON.stringify({username:$('frame-username').value,password:$('frame-password').value})});await login();}catch(error){message('frame-login-error',error.message);}});
 $('frame-logout').onclick=async()=>{const pending=json('/api/auth/logout',{method:'POST'});logout();const button=$('frame-login-form').querySelector('button');button.disabled=true;try{await pending;}catch(error){message('frame-login-error',error.message);}finally{button.disabled=false;}};
 
@@ -125,7 +145,7 @@ function renderTasks(tasks){
 }
 $('ig-task-list').onclick=e=>{const button=e.target.closest('[data-task]');if(button){latestTask=button.dataset.task;refresh();}};
 
-function navigate(name){page=name;root.querySelectorAll('[data-screen]').forEach(e=>e.hidden=e.dataset.screen!==name);root.querySelectorAll('[data-page]').forEach(e=>e.setAttribute('aria-pressed',String(e.dataset.page===name)));loadAdmin().catch(error=>message('ig-backend-message',error.message));}
+function navigate(name){if(adminSurface){if(!adminPages.includes(name)||name==='users'&&!superAdmin)name='backends';history.replaceState(null,'','#'+name);}else if(!['generate','account'].includes(name))return;page=name;root.querySelectorAll('[data-screen]').forEach(e=>e.hidden=e.dataset.screen!==name);root.querySelectorAll('[data-page]').forEach(e=>e.setAttribute('aria-pressed',String(e.dataset.page===name)));loadAdmin().catch(error=>message('ig-backend-message',error.message));}
 root.querySelector('.ig-nav').onclick=e=>{const button=e.target.closest('[data-page]');if(button)navigate(button.dataset.page);};
 async function refresh(){if(!token||refreshRunning)return;refreshRunning=true;const sessionToken=token;try{const [catalog,history,identity]=await Promise.all([json('/api/models'),json('/api/tasks'),json('/api/session')]);if(sessionToken!==token)return;permissions(identity);models=catalog.models;queueCount=catalog.queue_count;maxCount=catalog.max_count;renderModels();renderTasks(history.tasks);if(page==='backends')await loadAdmin();}catch(error){if(sessionToken===token)message('ig-submit-error',error.message);}finally{refreshRunning=false;}}
 async function loadAdmin(){
@@ -134,7 +154,7 @@ async function loadAdmin(){
   if(page==='backends'){const result=await json('/api/admin/backends');if(token!==sessionToken||page!==requestedPage)return;nodes=result.nodes;renderNodes();}
   if(page==='keys'){const result=await json('/api/admin/keys');if(token!==sessionToken||page!==requestedPage)return;keys=result.keys;renderKeys();}
   if(page==='settings'){const result=await json('/api/admin/settings');if(token!==sessionToken||page!==requestedPage)return;settings=result;$('ig-max').value=settings.max_count;$('ig-refresh').value=settings.refresh_seconds;$('ig-stale').value=settings.stale_seconds;}
-  if(page==='users'&&superAdmin){const result=await json('/api/admin/users');if(token!==sessionToken||page!==requestedPage)return;users=result.users;renderUsers();}
+  if(page==='users'&&superAdmin){const version=++userFetchVersion;const result=await json('/api/admin/users?limit=20&offset='+userOffset+'&q='+encodeURIComponent(userSearch));if(token!==sessionToken||page!==requestedPage||version!==userFetchVersion)return;users=result.users;userTotal=result.total;renderUsers();}
 }
 function renderNodes(){
   $('ig-nodes').innerHTML=nodes.map(n=>`<article class="ig-node"><div class="ig-node-head"><div><div class="ig-node-title"><strong>${escape(n.name)}</strong><span class="ig-pill">${!n.enabled?'已禁用':n.quarantined?'执行结果待确认':n.connected?'已连接':'连接失败'}</span></div><div class="ig-note">${escape(n.id)} · ${escape(n.base_url)}</div><div class="ig-note">${n.models.length} 个模型 / ${n.models.reduce((s,m)=>s+m.loras.length,0)} 个 LoRA${n.error?' · '+escape(n.error):''}</div></div><div class="ig-node-controls"><button class="ig-button" data-action="sync" data-node="${n.id}">立即同步</button><button class="ig-button" data-action="edit" data-node="${n.id}">编辑</button><button class="ig-button" data-action="toggle" data-node="${n.id}">${n.enabled?'禁用':'启用'}</button></div></div><details><summary>查看模型、LoRA 与配置 JSON</summary>${n.models.map(m=>`<h3>${escape(m.model_id)}</h3><p class="ig-note">LoRA：${escape(m.loras.map(l=>l.display_name||l.lora_id).join('、')||'无')}</p><pre><code>${escape(JSON.stringify(m.configuration,null,2))}</code></pre>`).join('')||'<p class="ig-note">暂无有效模型配置</p>'}</details></article>`).join('');
@@ -149,10 +169,18 @@ $('ig-key-form').addEventListener('submit',async e=>{e.preventDefault();try{cons
 $('ig-dismiss-key').onclick=()=>{$('ig-created-key').hidden=true;$('ig-key-value').value='';};
 $('ig-keys').onclick=async e=>{const button=e.target.closest('[data-key]');if(!button)return;const key=keys.find(k=>k.id===button.dataset.key);try{await json('/api/admin/keys/'+key.id,{method:'PATCH',body:JSON.stringify(button.dataset.action==='revoke'?{revoked:true}:{enabled:!key.enabled})});await loadAdmin();}catch(error){alert(error.message);}};
 $('ig-settings-form').addEventListener('submit',async e=>{e.preventDefault();try{settings=await json('/api/admin/settings',{method:'PUT',body:JSON.stringify({max_count:Number($('ig-max').value),refresh_seconds:Number($('ig-refresh').value),stale_seconds:Number($('ig-stale').value)})});message('ig-settings-message','参数已保存。');await refresh();}catch(error){message('ig-settings-message',error.message);}});
-function renderUsers(){ $('ig-users').innerHTML=users.map(u=>`<tr><td>${escape(u.username)}</td><td><select data-role="${u.id}">${['user','admin','super_admin'].map(r=>`<option value="${r}" ${r===u.role?'selected':''}>${{user:'用户',admin:'管理员',super_admin:'超级管理员'}[r]}</option>`).join('')}</select></td><td>${u.enabled?'启用':'禁用'}</td><td><button class="ig-button" data-user="${u.id}" data-action="toggle">${u.enabled?'禁用':'启用'}</button> <button class="ig-button" data-user="${u.id}" data-action="password">重置密码</button></td></tr>`).join(''); }
-$('ig-user-form').onsubmit=async e=>{e.preventDefault();try{await json('/api/admin/users',{method:'POST',body:JSON.stringify({username:$('ig-user-name').value,password:$('ig-user-password').value,role:$('ig-user-role').value})});$('ig-user-password').value='';$('ig-user-form').reset();message('ig-user-message','账号已创建。');await loadAdmin();}catch(error){message('ig-user-message',error.message);}};
-$('ig-users').onchange=async e=>{const id=e.target.dataset.role;if(!id)return;try{await json('/api/admin/users/'+id,{method:'PATCH',body:JSON.stringify({role:e.target.value})});await loadAdmin();await login();}catch(error){message('ig-user-message',error.message);await loadAdmin();}};
-$('ig-users').onclick=async e=>{const b=e.target.closest('[data-user]');if(!b)return;const u=users.find(u=>u.id===b.dataset.user);let body={enabled:!u.enabled};if(b.dataset.action==='password'){const password=prompt('请输入新密码（至少12位）');if(password===null)return;body={password};}try{await json('/api/admin/users/'+u.id,{method:'PATCH',body:JSON.stringify(body)});await loadAdmin();}catch(error){message('ig-user-message',error.message);}};
+function renderUsers(){
+  $('ig-users').innerHTML=users.map(u=>`<tr><td>${escape(u.username)}</td><td>${{user:'用户',admin:'管理员',super_admin:'超级管理员'}[u.role]}</td><td>${u.enabled?'启用':'禁用'}</td><td><div class="ig-actions"><button class="ig-button" data-user="${u.id}" data-action="edit">编辑</button><button class="ig-button" data-user="${u.id}" data-action="toggle">${u.enabled?'禁用':'启用'}</button><button class="ig-button" data-user="${u.id}" data-action="password">重置密码</button></div></td></tr>`).join('')||'<tr><td colspan="4">没有匹配的账号</td></tr>';
+  $('ig-user-page').textContent=`共 ${userTotal} 个账号 · 第 ${Math.floor(userOffset/20)+1} 页`;$('ig-user-prev').disabled=userOffset===0;$('ig-user-next').disabled=userOffset+20>=userTotal;
+}
+$('ig-user-form').onsubmit=async e=>{e.preventDefault();try{await json('/api/admin/users',{method:'POST',body:JSON.stringify({username:$('ig-user-name').value,password:$('ig-user-password').value,role:$('ig-user-role').value})});$('ig-user-form').reset();userOffset=0;message('ig-user-message','账号已创建。');await loadAdmin();}catch(error){message('ig-user-message',error.message);}};
+$('ig-user-search-form').onsubmit=async e=>{e.preventDefault();userSearch=$('ig-user-search').value.trim();userOffset=0;try{await loadAdmin();}catch(error){message('ig-user-message',error.message);}};
+$('ig-user-prev').onclick=async()=>{userOffset=Math.max(0,userOffset-20);await loadAdmin();};$('ig-user-next').onclick=async()=>{userOffset+=20;await loadAdmin();};
+$('ig-users').onclick=async e=>{const b=e.target.closest('[data-user]');if(!b)return;const u=users.find(u=>u.id===b.dataset.user);if(b.dataset.action==='toggle'){try{await json('/api/admin/users/'+u.id,{method:'PATCH',body:JSON.stringify({enabled:!u.enabled})});await loadAdmin();}catch(error){message('ig-user-message',error.message);}return;}
+  const reset=b.dataset.action==='password';$('ig-user-dialog').dataset.user=u.id;$('ig-user-dialog').dataset.reset=String(reset);$('ig-user-edit-form').reset();$('ig-user-dialog-title').textContent=reset?'重置密码':'编辑账号';$('ig-user-edit-name').value=u.username;$('ig-user-edit-role').value=u.role;$('ig-user-edit-fields').hidden=reset;$('ig-user-edit-password-field').hidden=!reset;$('ig-user-edit-password').required=reset;message('ig-user-edit-error','');$('ig-user-dialog').showModal();
+};
+$('ig-user-edit-form').onsubmit=async e=>{e.preventDefault();const dialog=$('ig-user-dialog');const body=dialog.dataset.reset==='true'?{password:$('ig-user-edit-password').value}:{username:$('ig-user-edit-name').value,role:$('ig-user-edit-role').value};try{await json('/api/admin/users/'+dialog.dataset.user,{method:'PATCH',body:JSON.stringify(body)});dialog.close();$('ig-user-edit-form').reset();await loadAdmin();await login();}catch(error){message('ig-user-edit-error',error.message);}};
+$('ig-user-edit-cancel').onclick=()=>{$('ig-user-dialog').close();$('ig-user-edit-form').reset();};$('ig-user-dialog').onclose=()=>{$('ig-user-edit-password').value='';};
 $('ig-password-form').onsubmit=async e=>{e.preventDefault();try{await json('/api/auth/password',{method:'POST',body:JSON.stringify({current_password:$('ig-current-password').value,password:$('ig-new-password').value})});$('ig-password-form').reset();logout();message('frame-login-error','密码已更新，请重新登录。');}catch(error){message('ig-password-message',error.message);}};
 sessionStorage.removeItem('frame-token');
 login();

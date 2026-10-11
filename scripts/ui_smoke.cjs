@@ -6,12 +6,13 @@ const assert=(v,m)=>{if(!v)throw new Error(m);};
 (async()=>{
  const browser=await chromium.launch({headless:true,channel:'msedge'});
  const page=await browser.newPage({viewport:{width:1100,height:1000}});
+ const goPage=async name=>{const adminPage=!['generate','account'].includes(name);if((new URL(page.url()).pathname==='/admin')!==adminPage){await page.goto('http://127.0.0.1:18082'+(adminPage?'/admin':'/'));await page.locator('#dgx-studio').waitFor({state:'visible'});}await page.locator('[data-page="'+name+'"]').click();};
  const errors=[];page.on('pageerror',e=>errors.push(String(e)));
  await page.goto('http://127.0.0.1:18082');
  await page.locator('#frame-username').fill('admin');await page.locator('#frame-password').fill('ui-verification-token-0000000000');
  await page.locator('#frame-login-form button').click();
  await page.locator('#dgx-studio').waitFor({state:'visible'});
- await page.locator('[data-page="backends"]').click();
+ await goPage('backends');
  if(!(await page.locator('.ig-node').count())) {
  await page.locator('#ig-add-node').click();
  await page.locator('#ig-node-name').fill('UI test backend');
@@ -21,7 +22,7 @@ const assert=(v,m)=>{if(!v)throw new Error(m);};
  await page.locator('#ig-node-form button').first().click();
  }
  await page.getByText('已连接',{exact:true}).waitFor();
- await page.locator('[data-page="generate"]').click();
+ await goPage('generate');
  await page.waitForFunction(()=>document.querySelector('#ig-model').options.length===2);
  await page.locator('#ig-model').selectOption('test-image|r1');
  await page.locator('#ig-prompt').fill('a cabin');
@@ -38,26 +39,31 @@ const assert=(v,m)=>{if(!v)throw new Error(m);};
  assert(await page.locator('#ig-lora').inputValue()==='','model switch clears LoRA');
  await page.locator('#ig-prompt').fill('animate a cabin');await page.locator('#ig-submit').click();
  await page.waitForFunction(()=>document.querySelector('#ig-task-list').textContent.includes('test-video'));
- await page.locator('[data-page="keys"]').click();await page.locator('#ig-key-name').fill('UI verification');await page.locator('#ig-key-form button').click();
+ await goPage('keys');await page.locator('#ig-key-name').fill('UI verification');await page.locator('#ig-key-form button').click();
  await page.locator('#ig-created-key').waitFor({state:'visible'});assert((await page.locator('#ig-key-value').inputValue()).startsWith('sk-frame-'),'real API key created');
  await page.locator('#ig-dismiss-key').click();assert(await page.locator('#ig-key-value').inputValue()==='','one-time key cleared');
  await page.locator('[data-action="revoke"]').click();await page.getByText('已撤销',{exact:true}).waitFor();
- await page.locator('[data-page="settings"]').click();await page.locator('#ig-max').fill('1');await page.locator('#ig-settings-form button').click();await page.getByText('参数已保存。',{exact:true}).waitFor();
- await page.locator('[data-page="generate"]').click();await page.waitForFunction(()=>document.querySelector('#ig-submit').disabled);assert(await page.locator('#ig-submit').isDisabled(),'queue full blocks submit');
+ await goPage('settings');await page.locator('#ig-max').fill('1');await page.locator('#ig-settings-form button').click();await page.getByText('参数已保存。',{exact:true}).waitFor();
+ await goPage('generate');await page.waitForFunction(()=>document.querySelector('#ig-submit').disabled);assert(await page.locator('#ig-submit').isDisabled(),'queue full blocks submit');
  for(const width of [1100,390,320]){
   await page.setViewportSize({width,height:1000});
   for(const name of ['generate','backends','keys','settings','users','account']){
-   await page.locator('[data-page="'+name+'"]').click();
+   await goPage(name);
    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+2),'no outer overflow '+width+' '+name);
    if(width!==320)await page.screenshot({path:path.join(directory,name+'-'+width+'.png'),fullPage:true});
   }
  }
- await page.locator('[data-page="keys"]').click();await page.locator('#ig-key-name').fill('Non-admin session');await page.locator('#ig-key-form button').click();await page.locator('#ig-created-key').waitFor({state:'visible'});
- await page.locator('[data-page="users"]').click();await page.locator('#ig-user-name').fill('ui-user');await page.locator('#ig-user-password').fill('ui-password-123');await page.locator('#ig-user-form button').click();await page.getByText('账号已创建。',{exact:true}).waitFor();
+ await goPage('keys');await page.locator('#ig-key-name').fill('Non-admin session');await page.locator('#ig-key-form button').click();await page.locator('#ig-created-key').waitFor({state:'visible'});
+ await goPage('users');await page.locator('#ig-user-name').fill('ui-user');await page.locator('#ig-user-password').fill('ui-password-123');await page.locator('#ig-user-form button').click();await page.getByText('账号已创建。',{exact:true}).waitFor();
+ await page.locator('#ig-user-search').fill('ui-user');await page.locator('#ig-user-search-form button').click();await page.getByRole('cell',{name:'ui-user',exact:true}).waitFor();
+ await page.locator('#ig-users tr').filter({has:page.getByRole('cell',{name:'ui-user',exact:true})}).locator('[data-action="edit"]').click();await page.locator('#ig-user-edit-name').fill('ui-renamed');await page.locator('#ig-user-edit-form button[type="submit"]').click();await page.locator('#ig-user-dialog').waitFor({state:'hidden'});
+ await page.locator('#ig-user-search').fill('ui-renamed');await page.locator('#ig-user-search-form button').click();await page.getByRole('cell',{name:'ui-renamed',exact:true}).waitFor();
+ await page.locator('#ig-users tr').filter({has:page.getByRole('cell',{name:'ui-renamed',exact:true})}).locator('[data-action="password"]').click();assert(await page.locator('#ig-user-edit-password').getAttribute('type')==='password','password reset input is masked');await page.locator('#ig-user-edit-password').fill('reset-password-123');await page.locator('#ig-user-edit-form button[type="submit"]').click();await page.locator('#ig-user-dialog').waitFor({state:'hidden'});
  await page.locator('#frame-logout').click();
  assert(await page.locator('#frame-password').inputValue()==='','logout clears entered password');
  assert(await page.locator('#ig-key-value').inputValue()==='','logout clears one-time key');
- await page.locator('#frame-username').fill('ui-user');await page.locator('#frame-password').fill('ui-password-123');await page.locator('#frame-login-form button').click();await page.locator('#dgx-studio').waitFor({state:'visible'});
+ await page.locator('#frame-username').fill('ui-renamed');await page.locator('#frame-password').fill('reset-password-123');await page.locator('#frame-login-form button').click();await page.locator('#dgx-studio').waitFor({state:'visible'});
+ assert(!await page.locator('#frame-admin-link').isVisible(),'ordinary user has no admin entry');assert((await page.request.get('http://127.0.0.1:18082/admin')).status()===403,'ordinary user admin page forbidden');
  assert(!await page.locator('[data-page="keys"]').isVisible(),'ordinary user has no admin navigation');
  assert(await page.locator('[data-screen="generate"]').isVisible(),'ordinary user login resets to generate');
  assert(await page.locator('#ig-cluster-foot').textContent()==='模型与 LoRA 自动同步','ordinary user footer does not show unqueried node counts');

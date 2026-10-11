@@ -23,7 +23,7 @@ const path=require('path');
  if(await page.locator('#ig-lora').inputValue()!=='')throw new Error('LoRA selection was not reset');
  const directory=path.resolve('verification-output/live-ui');fs.mkdirSync(directory,{recursive:true});
  await page.screenshot({path:path.join(directory,'generate.png'),fullPage:true});
- await page.locator('[data-page="backends"]').click();await page.getByText('已连接',{exact:true}).waitFor();
+ await page.goto(base+'/admin');await page.locator('#dgx-studio').waitFor({state:'visible'});await page.locator('[data-page="backends"]').click();await page.getByText('已连接',{exact:true}).waitFor();
  await page.locator('summary').first().click();await page.screenshot({path:path.join(directory,'backends.png'),fullPage:true});
  await page.locator('[data-page="keys"]').click();await page.getByText('deployment-verification',{exact:true}).first().waitFor();
  await page.locator('[data-page="settings"]').click();await page.waitForFunction(()=>document.querySelector('#ig-max').value==='100');

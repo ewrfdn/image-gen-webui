@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
@@ -62,6 +62,14 @@ def create_app(config=None, client=None):
 
     @app.exception_handler(ApiError)
     async def api_error(request, exc):
+        if request.url.path.rstrip("/") == "/admin":
+            if exc.status == 401:
+                return RedirectResponse("/?next=/admin", status_code=303)
+            if exc.status == 403:
+                return HTMLResponse(
+                    '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>无权访问后台</title><body><h1>无权访问后台</h1><p>仅管理员和超级管理员可以进入管理后台。</p><a href="/">返回推理平台</a></body></html>',
+                    status_code=403,
+                )
         return JSONResponse(
             {"error": {"code": exc.code, "message": exc.message}},
             status_code=exc.status,
@@ -519,5 +527,15 @@ def create_app(config=None, client=None):
         return {"status": "updated"}
 
     static = Path(__file__).resolve().parents[2] / "ui"
+
+    @app.get("/admin", include_in_schema=False)
+    @app.get("/admin/", include_in_schema=False)
+    async def admin_page(identity=Depends(admin)):
+        return FileResponse(
+            static / "index.html",
+            media_type="text/html",
+            headers={"Cache-Control": "no-store"},
+        )
+
     app.mount("/", StaticFiles(directory=static, html=True), name="ui")
     return app
