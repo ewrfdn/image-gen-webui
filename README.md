@@ -13,6 +13,8 @@ uv run --python 3.12 --extra test pytest -q
 
 `server/tests/serve_preview.py`启动真实UI/API和受控测试后端，使用临时SQLite库，不会调用GPU。`scripts/ui_smoke.cjs`运行浏览器验证，需Playwright与Edge；可通过PLAYWRIGHT_MODULE指定Playwright包位置。生产始终使用PostgreSQL。
 
+`python scripts/run_postgres_checks.py`将同一组server测试运行在隔离的PostgreSQL 17容器上，自动使用随机回环端口和临时数据库，结束后移除该测试容器；不会访问生产数据库或GPU。
+
 ## DGX部署
 
 源码通过Git固定。仅监听回环地址，经SSH转发访问。保留.env和platform-data；不要提交凭证、权重或产物。
