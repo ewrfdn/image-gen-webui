@@ -15,6 +15,8 @@ uv run --python 3.12 --extra test pytest -q
 
 `python scripts/run_postgres_checks.py`将同一组server测试运行在隔离的PostgreSQL 17容器上，自动使用随机回环端口和临时数据库，结束后移除该测试容器；不会访问生产数据库或GPU。
 
+`scripts/run_arm64_checks.py`验证已经构建的`image-gen-platform:0.2.0`与`image-gen-postgres:17-arm64`镜像，使用隔离网络和临时数据库，适用于在Docker Desktop验证DGX目标架构，不调用GPU。
+
 ## DGX部署
 
 源码通过Git固定。仅监听回环地址，经SSH转发访问。保留.env和platform-data；不要提交凭证、权重或产物。
