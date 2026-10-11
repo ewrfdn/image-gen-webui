@@ -45,7 +45,7 @@ async function login() {
     await refresh();
   } catch (error) { message('frame-login-error',error.message); }
 }
-function permissions(identity){admin=identity.admin;superAdmin=identity.role==='super_admin';$('frame-identity').textContent=identity.username+' · '+({user:'用户',admin:'管理员',super_admin:'超级管理员'}[identity.role]);root.querySelectorAll('[data-page]').forEach(button=>button.hidden=button.dataset.page==='users'?!superAdmin:!['generate','account'].includes(button.dataset.page)&&!admin);if((page==='users'&&!superAdmin)||(!['generate','account'].includes(page)&&!admin))navigate('generate');}
+function permissions(identity){admin=identity.admin;superAdmin=identity.role==='super_admin';$('frame-identity').textContent=identity.username+' · '+({user:'用户',admin:'管理员',super_admin:'超级管理员'}[identity.role]);if(!admin)$('ig-cluster-foot').textContent='模型与 LoRA 自动同步';root.querySelectorAll('[data-page]').forEach(button=>button.hidden=button.dataset.page==='users'?!superAdmin:!['generate','account'].includes(button.dataset.page)&&!admin);if((page==='users'&&!superAdmin)||(!['generate','account'].includes(page)&&!admin))navigate('generate');}
 $('frame-login-form').addEventListener('submit',async e=>{e.preventDefault();try{await json('/api/auth/login',{method:'POST',body:JSON.stringify({username:$('frame-username').value,password:$('frame-password').value})});await login();}catch(error){message('frame-login-error',error.message);}});
 $('frame-logout').onclick=async()=>{const pending=json('/api/auth/logout',{method:'POST'});logout();const button=$('frame-login-form').querySelector('button');button.disabled=true;try{await pending;}catch(error){message('frame-login-error',error.message);}finally{button.disabled=false;}};
 
@@ -138,7 +138,7 @@ async function loadAdmin(){
 }
 function renderNodes(){
   $('ig-nodes').innerHTML=nodes.map(n=>`<article class="ig-node"><div class="ig-node-head"><div><div class="ig-node-title"><strong>${escape(n.name)}</strong><span class="ig-pill">${!n.enabled?'已禁用':n.quarantined?'执行结果待确认':n.connected?'已连接':'连接失败'}</span></div><div class="ig-note">${escape(n.id)} · ${escape(n.base_url)}</div><div class="ig-note">${n.models.length} 个模型 / ${n.models.reduce((s,m)=>s+m.loras.length,0)} 个 LoRA${n.error?' · '+escape(n.error):''}</div></div><div class="ig-node-controls"><button class="ig-button" data-action="sync" data-node="${n.id}">立即同步</button><button class="ig-button" data-action="edit" data-node="${n.id}">编辑</button><button class="ig-button" data-action="toggle" data-node="${n.id}">${n.enabled?'禁用':'启用'}</button></div></div><details><summary>查看模型、LoRA 与配置 JSON</summary>${n.models.map(m=>`<h3>${escape(m.model_id)}</h3><p class="ig-note">LoRA：${escape(m.loras.map(l=>l.display_name||l.lora_id).join('、')||'无')}</p><pre><code>${escape(JSON.stringify(m.configuration,null,2))}</code></pre>`).join('')||'<p class="ig-note">暂无有效模型配置</p>'}</details></article>`).join('');
-  $('ig-cluster-foot').textContent=nodes.filter(n=>n.connected).length+' 个在线节点 · 模型与 LoRA 自动同步';
+  $('ig-cluster-foot').textContent=admin?nodes.filter(n=>n.connected).length+' 个在线节点 · 模型与 LoRA 自动同步':'模型与 LoRA 自动同步';
 }
 function openNode(node){editNode=node?.id||null;$('ig-node-form').hidden=false;$('ig-node-editor-title').textContent=node?'编辑后端':'接入后端';$('ig-node-name').value=node?.name||'';$('ig-node-url').value=node?.base_url||'';$('ig-node-admin').value='';$('ig-node-inference').value='';}
 $('ig-add-node').onclick=()=>openNode(null);$('ig-cancel-node').onclick=()=>{$('ig-node-form').hidden=true;};

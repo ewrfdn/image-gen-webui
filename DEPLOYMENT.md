@@ -10,6 +10,10 @@
 
 验证包括原11项平台测试、5项账号/权限/迁移测试（真实PostgreSQL共16项），以及实际浏览器账号登录、超级管理员创建普通账号、普通用户隐藏管理入口、退出时清除敏感状态和320/390/1100px布局。API层验证了用户生成、任务/文件隔离、禁止/v1访问、Key归属、角色降级立即失效、最后一个超级管理员保护、会话过期和密码更新。
 
+DGX实际ARM64镜像与隔离PostgreSQL也通过16项测试。已备份生产库到权限0600的verification-output/pre-accounts-db.sql，然后仅替换server，infra和其他容器保持运行。真实浏览器用超级管理员创建临时普通用户/管理员，验证普通用户1024×1024 GPU出图、私有下载/历史、禁止Key及/v1访问；管理员Key调用成功，降级后立即401。临时账号最终禁用，Key撤销。证据为本机verification-output/accounts-live/report.json、user-result.png及generated.png；后续仅调整普通用户页脚并补充验收工具，运行server镜像revision对应最终源码提交。
+
+生产库升级后逐项对照备份中的ID：原5个API Key、9个任务和9个文件记录全部保留，Key均已绑定账号，没有未完成任务；所有8个运行容器健康。数据库核对报告为DGX verification-output/accounts-final-audit.json。
+
 ## 已完成
 
 - Git分支：`codex/platform-ui-server`。源码通过Git bundle同步到DGX，未推送GitHub。运行应用源与分支中server/ui的源码一致；随后提交包含验证工具和本报告。
