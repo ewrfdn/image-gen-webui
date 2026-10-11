@@ -1,6 +1,6 @@
 # local-dgx 整套服务部署记录
 
-日期：2026-10-12。状态：整套服务已部署，非GPU验收通过。真实GPU生成按照用户要求跳过。
+日期：2026-10-12。状态：整套服务已部署，非GPU验收和真实GPU端到端验收均通过。
 
 ## 已完成
 
@@ -23,7 +23,20 @@
 | qwen-image-2.1 | 4 | 当前backend不支持 | 空载，need_load |
 | noobai-XL-1.1 | 1 | 当前backend不支持 | 空载，need_load |
 
-当前接入local-dgx一个推理节点；第二台DGX可在后台配置地址和两个服务Token后接入。当前节点只有图片模型，没有已部署的视频或参考图backend；参考图/视频流程已用受控backend验证，不能视为真实模型质量验收。本次没有启动或停止GLM，也没有真实GPU出图、显存压力或长期稳定性测试。
+当前接入local-dgx一个推理节点；第二台DGX可在后台配置地址和两个服务Token后接入。当前节点只有图片模型，没有已部署的视频或参考图backend；参考图/视频流程已用受控backend验证，不能视为真实模型质量验收。初次部署遵照用户选择只做非GPU检查；随后用户明确授权真实GPU测试和临时暂停其他容器，完成了下面的验收。没有做显存压力或长期稳定性测试。
+
+## 真实GPU端到端验收与恢复
+
+- 测试前通过SSH核实两台机器：local-dgx（spark-adeb）运行8个容器；2-local-dgx（spark-d705）没有运行容器。两台glm53-flash-tf均已停止。没有启动原本停止的GLM。
+- 暂停第一台的5个其他运行容器：dsh-auth-ingress-1、dsh-auth-authelia-1、dsh-auth-gateway-1、new-api、paper-agent；保留平台的server、database、inference执行测试。第二台没有需要暂停的容器。
+- Qwen真实GPU任务经过server调度自动加载并生成512×512图片；LoRA改变像素，移除LoRA后像素与基线完全一致。下载PNG通过Pillow解码与非空图像检查。
+- SDXL真实同步Images API返回200，b64_json与鉴权下载的持久化PNG完全一致。数据库实查model_sha256及LoRA sha256；任务保留模型revision、node_id和storage_key。
+- 实际浏览器选择noobai-XL-1.1及bocchi_illustrious_lora，按默认1024×1024、25步生成；验证真实图片渲染、下载及刷新后历史记录。最终成功UI任务为660bf60f-184a-441e-817a-b87551ec2744，无浏览器运行错误。
+- 验收工具的Python路径、响应头大小写及浏览器等待/URL处理曾中断检查，修正后继续验证。中断时容器恢复逻辑正常执行，已完成的GPU任务均成功；最终验收报告passed=true、phase=finished。
+- 最终9笔真实GPU任务全部成功，无等待任务；3个测试API Key均已撤销。两模型通过infra的unload接口释放，状态need_load。
+- 第一台恢复到测试前同一组8个运行容器（容器ID集合完全一致），所有有健康检查的容器均healthy。第二台仍无运行容器，两台GLM保持原停止状态。
+
+证据：verification-output/gpu-e2e/report.json、first-attempt-report.json、second-attempt-report.json、final-audit.json及真实PNG；verification-output/gpu-ui/report.json、result-page.png、real-ui-result.png。验收工具为scripts/gpu_e2e.py和scripts/live_gpu_ui.cjs；GPU验收脚本只能在明确授权暂停其他运行容器的维护窗口使用，测试期间需运行浏览器验收并写入ui.done，否则15分钟后检查失败并恢复容器。
 
 ## 访问与维护
 
