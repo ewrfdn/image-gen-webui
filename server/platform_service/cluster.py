@@ -168,7 +168,7 @@ class Registry:
                 if entry["artifact_sha256"] != item["artifact_sha256"]:
                     entry["conflict"] = True
                 entry["nodes"].append(node_id)
-                for lora in item.get("loras", []):
+                for lora in self.model_loras(item):
                     if lora not in entry["loras"]:
                         entry["loras"].append(copy.deepcopy(lora))
                 local = self.local_status(node_id, snap["runtime"], item["model_id"])
@@ -179,6 +179,19 @@ class Registry:
             if item["conflict"]:
                 item["status"] = "unavailable"
         return list(grouped.values())
+
+    @staticmethod
+    def model_loras(model):
+        """The containing model is the binding; reject contradictory declarations."""
+        if not model["configuration"]["lora"]["supported"]:
+            return []
+        return [
+            {**lora, "model_id": model["model_id"], "base_model_revision": model["revision"]}
+            for lora in model.get("loras", [])
+            if isinstance(lora, dict)
+            and lora.get("model_id", model["model_id"]) == model["model_id"]
+            and lora.get("base_model_revision", model["revision"]) == model["revision"]
+        ]
 
     def local_status(self, node_id, runtime, model_id):
         if node_id in self.quarantined:
@@ -233,7 +246,7 @@ class Registry:
                     and (
                         not wanted.get("sha256") or l.get("sha256") == wanted["sha256"]
                     )
-                    for l in item.get("loras", [])
+                    for l in self.model_loras(item)
                 )
                 for wanted in loras or []
             ):

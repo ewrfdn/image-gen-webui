@@ -11,3 +11,5 @@ models
 **/verification-output
 **/data
 .uv-cache
+**/node_modules
+ui/dist

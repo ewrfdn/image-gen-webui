@@ -79,6 +79,13 @@ class Setting(Base):
     stale_seconds: Mapped[int] = mapped_column(Integer, default=15)
 
 
+class ModelDefault(Base):
+    __tablename__ = "model_defaults"
+    model_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    revision: Mapped[str] = mapped_column(String(128), primary_key=True)
+    generation: Mapped[dict] = mapped_column(JSON)
+
+
 class Task(Base):
     __tablename__ = "media_tasks"
     __table_args__ = (

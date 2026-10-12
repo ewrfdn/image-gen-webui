@@ -15,5 +15,7 @@ verification-output/
 platform-data/
 server/data/
 models/
+ui/node_modules/
+ui/dist/
 *.safetensors
 *.ckpt

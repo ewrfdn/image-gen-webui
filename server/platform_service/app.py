@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, Request, UploadFile
+from fastapi import Depends, FastAPI, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,7 +15,8 @@ from sqlalchemy import func, select
 
 from .accounts import Accounts
 from .config import Config
-from .db import ApiKey, MediaFile, Node, Setting, Task
+from .db import ApiKey, MediaFile, ModelDefault, Node, Setting, Task, User
+from .cluster import valid_size
 from .service import WAITING, ApiError, Platform
 
 
@@ -33,6 +34,16 @@ class SettingsInput(BaseModel):
     max_count: int = Field(ge=1, le=100000)
     refresh_seconds: int = Field(ge=1, le=3600)
     stale_seconds: int = Field(ge=1, le=86400)
+
+
+class ModelDefaultInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_id: str = Field(min_length=1, max_length=128)
+    revision: str = Field(min_length=1, max_length=128)
+    default_size: str
+    default_steps: int = Field(ge=1, strict=True)
+    default_guidance_scale: float = Field(ge=0, le=20, allow_inf_nan=False)
+    default_seed: int | None = Field(default=None, ge=0, le=2**32 - 1, strict=True)
 
 
 def create_app(config=None, client=None):
@@ -127,7 +138,7 @@ def create_app(config=None, client=None):
                 select(func.count()).select_from(Task).where(Task.status.in_(WAITING))
             )
         return {
-            "models": platform.registry.models(),
+            "models": await platform.models_with_defaults(),
             "queue_count": count,
             "max_count": platform.settings["max_count"],
         }
@@ -170,10 +181,10 @@ def create_app(config=None, client=None):
         return {"id": task_id, "status": "pending"}
 
     @app.get("/api/tasks")
-    async def tasks(identity=Depends(authorize)):
+    async def tasks(mine: bool = False, limit: int = Query(default=50, ge=1, le=100), identity=Depends(authorize)):
         async with platform.db.sessions() as db:
-            query = select(Task).order_by(Task.created_at.desc()).limit(50)
-            if not identity["admin"]:
+            query = select(Task).order_by(Task.created_at.desc(), Task.id.desc()).limit(limit)
+            if mine or not identity["admin"]:
                 query = query.where(Task.owner == identity["owner"])
             ids = (await db.scalars(query)).all()
         return {
@@ -182,6 +193,79 @@ def create_app(config=None, client=None):
                 for t in ids
             ]
         }
+
+    @app.get("/api/admin/history", dependencies=[Depends(admin)])
+    async def admin_history(q: str = Query(default="", max_length=128),
+                            user_id: str = Query(default="", max_length=36),
+                            status: str = "", limit: int = Query(default=24, ge=1, le=100),
+                            offset: int = Query(default=0, ge=0), identity=Depends(admin)):
+        q = q.strip()
+        async with platform.db.sessions() as db:
+            users = {"user:" + u.id: u.username for u in (await db.scalars(select(User))).all()}
+            keys = {"key:" + k.id: users.get("user:" + (k.user_id or ""), "未知账号") + " / " + k.name
+                    for k in (await db.scalars(select(ApiKey))).all()}
+            owners = users | keys
+            query = select(Task)
+            if user_id:
+                user_keys = (await db.scalars(select(ApiKey.id).where(ApiKey.user_id == user_id))).all()
+                query = query.where(Task.owner.in_(["user:" + user_id, *["key:" + k for k in user_keys]]))
+            elif q:
+                matching = [owner for owner, name in owners.items() if q.casefold() in name.casefold()]
+                query = query.where(Task.owner.in_(matching))
+            if status:
+                query = query.where(Task.status == status)
+            total = await db.scalar(select(func.count()).select_from(query.subquery()))
+            tasks = (await db.scalars(query.order_by(Task.created_at.desc()).limit(limit).offset(offset))).all()
+        records = []
+        for t in tasks:
+            record = await platform.task_view(t.id, identity["owner"], True)
+            record["username"] = owners.get(t.owner, t.owner)
+            records.append(record)
+        return {"tasks": records, "total": total, "limit": limit, "offset": offset}
+
+    @app.get("/api/history")
+    async def personal_history(
+        limit: int = Query(default=24, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        identity=Depends(authorize),
+    ):
+        # Personal galleries stay owner-scoped even for administrators.
+        async with platform.db.sessions() as db:
+            query = select(Task).where(
+                Task.owner == identity["owner"],
+                Task.type == "image",
+                Task.status == "succeeded",
+                select(MediaFile.id).where(
+                    MediaFile.task_id == Task.id, MediaFile.role == "output"
+                ).exists(),
+            )
+            total = await db.scalar(select(func.count()).select_from(query.subquery()))
+            records = (await db.scalars(
+                query.order_by(Task.created_at.desc(), Task.id.desc()).limit(limit).offset(offset)
+            )).all()
+        return {
+            "tasks": [await platform.task_view(t.id, identity["owner"]) for t in records],
+            "total": total, "limit": limit, "offset": offset,
+        }
+
+    @app.put("/api/admin/model-defaults", dependencies=[Depends(admin)])
+    async def model_defaults(payload: ModelDefaultInput):
+        model = next((m for m in platform.registry.models()
+                      if m["model_id"] == payload.model_id and m["revision"] == payload.revision), None)
+        if model is None:
+            raise ApiError(404, "model_not_found", "Model revision is not in the catalogue")
+        generation = model["configuration"]["generation"]
+        if not valid_size(payload.default_size, generation) or payload.default_steps > generation["steps_max"]:
+            raise ApiError(400, "invalid_defaults", "Defaults are outside model limits")
+        values = payload.model_dump(exclude={"model_id", "revision"})
+        async with platform.admission_lock, platform.db.sessions() as db:
+            record = await db.get(ModelDefault, (payload.model_id, payload.revision))
+            if record is None:
+                db.add(ModelDefault(model_id=payload.model_id, revision=payload.revision, generation=values))
+            else:
+                record.generation = values
+            await db.commit()
+        return values
 
     @app.get("/api/tasks/{task_id}")
     async def task(task_id: str, identity=Depends(authorize)):
@@ -526,7 +610,7 @@ def create_app(config=None, client=None):
             await db.commit()
         return {"status": "updated"}
 
-    static = Path(__file__).resolve().parents[2] / "ui"
+    static = Path(__file__).resolve().parents[2] / "ui" / "dist"
 
     @app.get("/admin", include_in_schema=False)
     @app.get("/admin/", include_in_schema=False)
@@ -537,5 +621,6 @@ def create_app(config=None, client=None):
             headers={"Cache-Control": "no-store"},
         )
 
-    app.mount("/", StaticFiles(directory=static, html=True), name="ui")
+    # API-only checks can initialize before the frontend build is present.
+    app.mount("/", StaticFiles(directory=static, html=True, check_dir=False), name="ui")
     return app

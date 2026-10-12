@@ -19,6 +19,8 @@ def test_catalog_requires_json_and_pins_revision(project, admin_headers, infer_h
         model = catalog["models"][0]
         assert model["configuration"]["reference"]["supported"] is False
         assert model["loras"][0]["sha256"]
+        assert model["loras"][0]["model_id"] == model["model_id"]
+        assert model["loras"][0]["base_model_revision"] == model["revision"]
         client.post("/internal/v1/models/sdxl-base/load", headers=admin_headers)
         result = client.post(
             "/v1/images/generations",

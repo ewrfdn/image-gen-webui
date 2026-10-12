@@ -14,6 +14,8 @@ from test_platform import Backend, model
 
 backend = Backend()
 backend.models = [model(references=True), model("video", True)]
+backend.models[1]["loras"][0]["lora_id"] = "video-style"
+backend.models[1]["loras"][0]["display_name"] = "Video Style"
 folder = Path(tempfile.mkdtemp(prefix="frame-ui-check-"))
 config = Config(
     "sqlite+aiosqlite:///" + str(folder / "db.sqlite"),

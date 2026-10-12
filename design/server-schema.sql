@@ -28,6 +28,13 @@ CREATE TABLE system_settings (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO system_settings(id) VALUES (1);
+-- Platform overrides, not a durable model catalogue. Scoped to an exact revision.
+CREATE TABLE model_defaults (
+  model_id varchar(128) NOT NULL,
+  revision varchar(128) NOT NULL,
+  generation jsonb NOT NULL,
+  PRIMARY KEY (model_id, revision)
+);
 CREATE TABLE media_tasks (
   id uuid PRIMARY KEY,
   type varchar(16) NOT NULL CHECK (type IN ('image', 'video')),

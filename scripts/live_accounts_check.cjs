@@ -16,7 +16,7 @@ const fs=require('fs'),path=require('path'),crypto=require('crypto');
   await signIn(superPage,'admin',credential.stdout.trim());
   await superPage.goto(base+'/admin#users');await superPage.locator('#dgx-studio').waitFor({state:'visible'});await superPage.locator('[data-page="users"]').click();
   for(const role of ['user','admin']){
-   await superPage.locator('#ig-user-name').fill('verify-'+role+'-'+suffix);await superPage.locator('#ig-user-password').fill(password);await superPage.locator('#ig-user-role').selectOption(role);
+   await superPage.locator('#ig-user-name').fill('verify-'+role+'-'+suffix);await superPage.locator('#ig-user-password').fill(password);await superPage.locator('.ant-select').filter({has:superPage.locator('#ig-user-role')}).click();await superPage.locator('.ant-select-dropdown:visible').getByText(role==='user'?'用户':'管理员',{exact:true}).click();
    const posted=superPage.waitForResponse(r=>r.url().endsWith('/api/admin/users')&&r.request().method()==='POST');await superPage.locator('#ig-user-form button').click();
    const response=await posted;requireValue(response.status()===201,'super admin creates '+role);accounts.push(await response.json());
   }
@@ -29,8 +29,7 @@ const fs=require('fs'),path=require('path'),crypto=require('crypto');
   for(const name of ['keys','users','backends','settings'])requireValue(!await userPage.locator('[data-page="'+name+'"]').isVisible(),'user hides '+name);
   requireValue((await userPage.request.get(base+'/v1/models')).status()===403,'user cannot call v1');
   requireValue((await userPage.request.post(base+'/api/admin/keys',{data:{name:'denied'}})).status()===403,'user cannot create API Key');
-  await userPage.waitForFunction(()=>[...document.querySelector('#ig-model').options].some(o=>o.value.startsWith('noobai-XL-1.1|')));
-  const model=await userPage.locator('#ig-model option').evaluateAll(opts=>opts.find(o=>o.value.startsWith('noobai-XL-1.1|')).value);await userPage.locator('#ig-model').selectOption(model);await userPage.locator('#ig-prompt').fill('a small cabin in a snowy forest, detailed illustration');
+  await userPage.locator('[data-model^="noobai-XL-1.1|"]').click();await userPage.locator('#ig-prompt').fill('a small cabin in a snowy forest, detailed illustration');
   const posted=userPage.waitForResponse(r=>r.url().endsWith('/api/tasks')&&r.request().method()==='POST');await userPage.locator('#ig-submit').click();const response=await posted;requireValue(response.status()===202,'user submits UI task');const task=await response.json();
   await userPage.waitForFunction(id=>document.querySelector('#ig-result').dataset.signature===id+'|succeeded',task.id,{timeout:1200000});await userPage.waitForFunction(()=>{const im=document.querySelector('#ig-result img');return im&&im.complete&&im.naturalWidth===1024;});
   const result=await (await userPage.request.get(base+'/api/tasks/'+task.id)).json();requireValue(result.status==='succeeded'&&result.node_id&&result.model_revision,'user GPU task persists');

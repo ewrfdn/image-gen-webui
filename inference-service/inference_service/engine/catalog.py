@@ -109,6 +109,8 @@ def catalogue(engine):
                     loras.append(
                         {
                             "lora_id": lora.lora_id,
+                            "model_id": checkpoint.model_id,
+                            "base_model_revision": c["revision"],
                             "revision": digest,
                             "sha256": digest,
                             "display_name": lora.lora_id,

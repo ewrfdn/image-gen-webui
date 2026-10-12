@@ -11,7 +11,7 @@ from urllib.parse import quote
 import httpx
 from PIL import Image
 from sqlalchemy import func, select
-from .db import ApiKey, Attempt, Database, MediaFile, Node, Setting, Task, now, uid
+from .db import ApiKey, Attempt, Database, MediaFile, ModelDefault, Node, Setting, Task, now, uid
 from .cluster import Registry, valid_size
 
 LOG = logging.getLogger(__name__)
@@ -142,6 +142,15 @@ class Platform:
             "url": f"/api/files/{file_id}/content",
         }
 
+    async def models_with_defaults(self):
+        async with self.db.sessions() as db:
+            defaults = (await db.scalars(select(ModelDefault))).all()
+        overrides = {(d.model_id, d.revision): d.generation for d in defaults}
+        return [dict(m, configuration=dict(m["configuration"], generation={
+            **m["configuration"]["generation"],
+            **overrides.get((m["model_id"], m["revision"]), {}),
+        })) for m in self.registry.models()]
+
     async def submit(self, owner, payload, source="ui"):
         if not self.ready:
             raise ApiError(503, "registry_initializing", "Catalogue is initializing")
@@ -188,7 +197,7 @@ class Platform:
             )
         matches = [
             m
-            for m in self.registry.models()
+            for m in await self.models_with_defaults()
             if m["model_id"] == payload.get("model")
             and (not payload.get("revision") or m["revision"] == payload["revision"])
         ]
@@ -208,6 +217,8 @@ class Platform:
         )
         body.setdefault("num_inference_steps", c["generation"]["default_steps"])
         body.setdefault("guidance_scale", c["generation"]["default_guidance_scale"])
+        if c["generation"].get("default_seed") is not None:
+            body.setdefault("seed", c["generation"]["default_seed"])
         if not valid_size(body["size"], c["generation"]):
             raise ApiError(400, "unsupported_size", "Size is outside model limits")
         selected_loras = payload.get("loras", [])
@@ -343,6 +354,14 @@ class Platform:
                     "completed_at",
                 )
             } | {
+                "prompt": task.request_body.get("prompt", ""),
+                "parameters": {
+                    **{k: v for k, v in task.request_body.items() if k in (
+                        "size", "seed", "num_inference_steps", "guidance_scale")},
+                    **({"seed": task.raw_result["seed"]}
+                       if task.raw_result and task.raw_result.get("seed") is not None else {}),
+                },
+                **({"owner": task.owner, "source": task.source} if admin else {}),
                 "files": [
                     {
                         "id": f.id,
@@ -471,7 +490,7 @@ class Platform:
             if match is None or any(
                 not any(
                     l["lora_id"] == w["lora_id"] and l["sha256"] == w["sha256"]
-                    for l in match.get("loras", [])
+                    for l in self.registry.model_loras(match)
                 )
                 for w in task.loras
             ):
