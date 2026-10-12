@@ -2,9 +2,9 @@
 
 ## 外网FRP入口
 
-HTTPS推理平台：https://hako.japaneast.cloudapp.azure.com:6068/；后台：同地址/admin。平台代理合并在DGX已有/opt/frp/frpc.toml中，复用现有frpc.service，将127.0.0.1:18080转发到hako frps的6069。通过既有7400控制接口热重载，SSH代理和frpc进程未重启。中转机Nginx在6068使用已有证书提供HTTPS；6069由防火墙限制为回环访问。
+HTTPS推理平台：https://bocchi.japaneast.cloudapp.azure.com:6068/；后台：同地址/admin。平台代理合并在DGX已有/opt/frp/frpc-bocchi.toml中，复用现有frpc-bocchi.service，将127.0.0.1:18080转发到bocchi frps的6069。通过既有7401控制接口热重载，SSH代理和frpc进程未重启。bocchi中转机Nginx在6068使用已有证书提供HTTPS；6069由防火墙限制为回环访问。https://bocchi.japaneast.cloudapp.azure.com/ 首页增加“推理平台”卡片和入口，原有服务链接保留。
 
-DGX复用原FRP连接凭证和开机自启配置，没有额外frpc服务；原配置已备份为/opt/frp/frpc.toml.bak.image-gen-platform-*（0600）。中转配置为/etc/nginx/conf.d/image-gen-platform.conf和image-gen-platform-firewall.service。server使用PLATFORM_TRUSTED_PROXIES信任127.0.0.1及实际Docker网关，以识别Nginx传入的HTTPS协议和正确设置Secure Cookie；不要将此配置设置为任意来源。
+DGX复用原FRP连接凭证和开机自启配置，没有额外frpc服务；两份配置已备份为/opt/frp/frpc*.toml.bak.move-platform-*（0600）。hako的/opt/frp/frpc.toml只保留SSH代理，并注明“此配置仅作备份，只配置SSH连接；业务代理统一配置在frpc-bocchi.toml”。hako临时平台HTTPS入口和防火墙单位已移除，恢复文件留在/var/backups/image-gen-platform。bocchi中转配置为/etc/nginx/conf.d/image-gen-platform.conf和image-gen-platform-firewall.service，首页文件为/var/www/home/index.html，修改前已备份。server使用PLATFORM_TRUSTED_PROXIES信任127.0.0.1及实际Docker网关，以识别Nginx传入的HTTPS协议和正确设置Secure Cookie；不要将此配置设置为任意来源。
 
 日期：2026-10-12。状态：整套服务已部署，非GPU验收和真实GPU端到端验收均通过。
 
