@@ -80,3 +80,22 @@ python3 scripts/verify_platform.py
 DGX网络下载曾多次中断，最终在本机构建并验证ARM64 server/PostgreSQL镜像后导入；GPU依赖复用DGX已有的验收镜像。离线包传输前后的SHA256一致。服务没有模型启动预加载，因此上线本身不会加载GPU权重。
 
 证据：DGX与本机verification-output/platform-report.json；本机verification-output/live-ui/report.json及实际页面截图；server和infra测试输出。上述文件不包含凭证。
+
+## 第二台 DGX 接入（2026-10-12）
+
+两台机器各接入一个推理节点：第一台继续使用平台内的 `http://inference:8000`；第二台 spark-d705 部署在 `/home/sakana/work/image-gen-infra`，通过私有高速链路 `http://192.168.101.2:18001` 接入 server。第二台端口只绑定回环和私有链路 IP，不通过 FRP 公开。平台入口及 bocchi 的 FRP 配置保持现有部署。
+
+第二台复用 `image-gen-inference:0.2.0`，使用 Docker 原生 CDI `nvidia.com/gpu=all`，无需修改 Docker 全局 runtime。两个模型和五个 LoRA 复制为独立只读目录；47 个模型文件通过完整 SHA256、大小和修改时间校验。节点使用独立推理及管理 Token，保存在权限 0600 的 `.env`，不进入 Git。
+
+初始化与启动：
+
+```bash
+python3 prepare_inference_node.py --root /home/sakana/work/image-gen-infra --bind-ip 192.168.101.2 --instance dgx-2
+cd /home/sakana/work/image-gen-infra
+docker compose -f compose.inference-node.yaml config --quiet
+docker compose -f compose.inference-node.yaml up -d --no-build --wait
+```
+
+在第一台的部署仓库运行 `python3 scripts/connect_second_backend.py`，输入当前管理员密码；脚本通过现有 `dgx2-fast` SSH 获取节点凭证，使用账号会话进行幂等接入，完成后退出会话。修改过密码后，初始 `PLATFORM_ADMIN_TOKEN` 不再作为当前登录凭证。
+
+接入报告 `verification-output/second-backend/connection-report.json` 确认两个已启用节点均连接正常、模型版本一致，聚合目录仍为两个模型、五个 LoRA。真实 GPU 验收记录在同目录 `gpu-report.json` 与 `dgx2-generation.png`；验收无需停止第一台任何容器。

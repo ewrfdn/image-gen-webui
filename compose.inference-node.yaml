@@ -1,0 +1,22 @@
+name: image-gen-infra
+services:
+  inference:
+    image: image-gen-inference:${SERVICE_VERSION:-0.2.0}
+    devices:
+      - nvidia.com/gpu=all
+    init: true
+    shm_size: 2gb
+    environment:
+      MODEL_ROOT: /models
+      INFERENCE_TOKEN: ${INFERENCE_TOKEN:?Configure node token}
+      ADMIN_TOKEN: ${INFERENCE_ADMIN_TOKEN:?Configure node admin token}
+      DEVICE: cuda:0
+      DTYPE: bfloat16
+      MODEL_OFFLOAD: none
+      INSTANCE_ID: ${INSTANCE_ID:-dgx-2}
+    ports:
+      - "127.0.0.1:${INFERENCE_PORT:-18001}:8000"
+      - "${INFERENCE_BIND_IP:?Set private interconnect IP}:${INFERENCE_PORT:-18001}:8000"
+    volumes:
+      - "${HOST_MODEL_ROOT:?Configure model directory}:/models:ro"
+    restart: unless-stopped
