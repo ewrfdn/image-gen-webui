@@ -26,6 +26,7 @@ services:
       PLATFORM_ADMIN_TOKEN: ${PLATFORM_ADMIN_TOKEN:?Run scripts/prepare_platform.py}
       PLATFORM_ENCRYPTION_KEY: ${PLATFORM_ENCRYPTION_KEY:?Run scripts/prepare_platform.py}
       DATA_ROOT: /data
+      FORWARDED_ALLOW_IPS: ${PLATFORM_TRUSTED_PROXIES:-127.0.0.1}
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${PLATFORM_PORT:-18080}:8000"
     volumes:

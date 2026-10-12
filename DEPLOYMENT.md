@@ -1,5 +1,11 @@
 # local-dgx 整套服务部署记录
 
+## 外网FRP入口
+
+HTTPS推理平台：https://hako.japaneast.cloudapp.azure.com:6068/；后台：同地址/admin。DGX通过独立user systemd服务image-gen-platform-frpc.service，将127.0.0.1:18080转发到hako frps的6069。中转机Nginx在6068使用已有证书提供HTTPS；6069由独立防火墙服务限制为回环访问。既有SSH穿透服务保持运行。
+
+DGX配置位于~/.config/frp/image-gen-platform.json（0600，复用既有FRP连接凭证）；服务开机自启，用户linger已开启。中转配置为/etc/nginx/conf.d/image-gen-platform.conf和image-gen-platform-firewall.service。server使用PLATFORM_TRUSTED_PROXIES信任127.0.0.1及实际Docker网关，以识别Nginx传入的HTTPS协议和正确设置Secure Cookie；不要将此配置设置为任意来源。
+
 日期：2026-10-12。状态：整套服务已部署，非GPU验收和真实GPU端到端验收均通过。
 
 ## 用户与角色升级
