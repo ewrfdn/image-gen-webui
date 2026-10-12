@@ -21,7 +21,8 @@ COPY server/platform_service ./platform_service
 COPY server/tests ./tests
 COPY --from=frontend /app/ui/dist /app/ui/dist
 COPY design/model-config.schema.json /app/design/model-config.schema.json
-RUN mkdir -p /data && chown -R 1000:1000 /data
+RUN chmod -R a+rX /app/server /app/ui/dist /app/design \
+    && mkdir -p /data && chown -R 1000:1000 /data
 USER 1000:1000
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=3s CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready',timeout=2)"
