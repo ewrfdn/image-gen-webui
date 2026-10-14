@@ -1,0 +1,5 @@
+#ig-workspace-scroll { overscroll-behavior-y: contain; scrollbar-width: thin; scrollbar-color: #424353 #111219; }
+#ig-workspace-scroll::-webkit-scrollbar { width: 8px; }
+#ig-workspace-scroll::-webkit-scrollbar-track { background: transparent; }
+#ig-workspace-scroll::-webkit-scrollbar-thumb { background: #424353; border: 2px solid #111219; border-radius: 8px; }
+#ig-workspace-scroll::-webkit-scrollbar-thumb:hover { background: #5b5c71; }

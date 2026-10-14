@@ -51,3 +51,7 @@
 .ig-result-cover:hover { border-color: #b5a4ed45; }.ig-result-cover:focus-visible { outline: 2px solid #a394ff; outline-offset: 4px; }
 .ig-result-actions { padding-top: 16px; }
 @media (max-width: 767px) { .ig-result-cover { height: min(48dvh, 400px); min-height: 240px; padding: 12px; } }
+
+/* Row-wise placement preserves newest-first reading order while retaining masonry heights. */
+.ig-masonry { display: grid; grid-auto-rows: 1px; column-gap: 18px; row-gap: 0; align-items: start; }
+.ig-masonry-item { min-width: 0; }

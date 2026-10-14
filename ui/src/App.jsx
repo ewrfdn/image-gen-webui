@@ -1,8 +1,9 @@
-import { createContext, lazy, Suspense, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import { createContext, lazy, Suspense, useContext, useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react';
 import { Alert, App as AntApp, Avatar, Button, Card, Divider, Flex, Form, Grid, Input, Layout, Spin, Tag, Typography } from 'antd';
 import { ArrowLeft, ArrowUpRight, Boxes, ChevronRight, History, KeyRound, Layers3, LogOut, Settings2, ShieldCheck, Sparkles, UserRound, Users } from 'lucide-react';
 import { api, roles, send } from './lib.js';
 import Generate from './Generate.jsx';
+import './workspace.css';
 const Gallery = lazy(() => import('./Gallery.jsx'));
 const adminPage = name => lazy(() => import('./admin.jsx').then(module => ({ default: module[name] })));
 const Backends = adminPage('Backends'), ModelDefaults = adminPage('ModelDefaults'), HistoryPage = adminPage('HistoryPage'), Keys = adminPage('Keys'), UsersPage = adminPage('UsersPage'), SettingsPage = adminPage('SettingsPage');
@@ -83,7 +84,7 @@ function Workspace({ identity, setIdentity, onLogout, passwordChanged }) {
   const [page, setPage] = useState((adminSurface ? adminPages : userPages).includes(location.hash.slice(1)) ? location.hash.slice(1) : adminSurface ? 'backends' : 'generate');
   const [generationDraft, setGenerationDraft] = useState(null);
   const [historyFilter, setHistoryFilter] = useState({ q: '', user_id: '' });
-  const active = useRef(true), polling = useRef(false);
+  const active = useRef(true), polling = useRef(false), contentRef = useRef(null);
   const refresh = useCallback(async () => {
     if (polling.current) return;
     polling.current = true;
@@ -105,6 +106,7 @@ function Workspace({ identity, setIdentity, onLogout, passwordChanged }) {
   useEffect(() => { setVisited(prev => prev.has(currentPage) ? prev : new Set(prev).add(currentPage)); }, [currentPage]);
   const keepAlive = (name, element) => <div key={name} hidden={currentPage !== name}>{visited.has(name) && <Suspense fallback={<Spin style={{ padding: 50 }} />}>{element}</Suspense>}</div>;
   useEffect(() => { document.title = adminSurface ? 'FRAME 管理后台' : 'FRAME 创作工作台'; }, []);
+  useLayoutEffect(() => { contentRef.current?.scrollTo({ top: 0 }); }, [currentPage]);
   const navigate = name => { setPage(name); history.replaceState(null, '', '#' + name); };
   async function logout() {
     // Unmount the workspace before the server round-trip, clearing all sensitive form state.
@@ -113,27 +115,27 @@ function Workspace({ identity, setIdentity, onLogout, passwordChanged }) {
   }
   const context = { generationDraft, setGenerationDraft, identity, catalog, tasks, refresh, navigate, historyFilter, setHistoryFilter, setIdentity, passwordChanged };
   return <StudioContext.Provider value={context}>
-    <Layout id="dgx-studio" style={{ minHeight: '100vh', maxWidth: 1920, margin: 'auto', background: '#111219' }}>
-      {screens.lg && <Layout.Sider width={216} style={{ background: '#13141d', padding: '34px 18px', position: 'sticky', top: 0, height: '100vh', overflowY: 'auto' }}><Flex vertical style={{ minHeight: '100%' }}>
+    <Layout id="dgx-studio" style={{ height: '100dvh', minHeight: 0, overflow: 'hidden', maxWidth: 1920, margin: 'auto', background: '#111219' }}>
+      {screens.lg && <Layout.Sider width={216} style={{ background: '#13141d', padding: '34px 18px', height: '100%', minHeight: 0, overflowY: 'auto' }}><Flex vertical style={{ minHeight: '100%' }}>
         <Flex align="center" gap={12} style={{ padding: '0 16px 44px', color: '#c3baff' }}>{icon(Sparkles, 25)}<Text strong style={{ color: '#f1eefb', letterSpacing: 4, fontSize: 21 }}>FRAME</Text></Flex>
         <Text style={{ color: '#727185', paddingLeft: 16, fontSize: 10, letterSpacing: 2 }}>{adminSurface ? 'MANAGEMENT' : 'CREATIVE SPACE'}</Text>
         <Flex vertical gap={7} style={{ marginTop: 18 }}>{visiblePages.map(([name, label, Icon]) => <Button key={name} data-page={name} aria-pressed={currentPage === name} onClick={() => navigate(name)} icon={icon(Icon)} type="text" style={{ height: 46, textAlign: 'left', justifyContent: 'flex-start', color: currentPage === name ? '#d8d0ff' : '#9392a7', background: currentPage === name ? '#ffffff12' : 'transparent', fontWeight: currentPage === name ? 600 : 400 }}>{label}</Button>)}</Flex>
         <Flex vertical gap={14} style={{ marginTop: 'auto', padding: '60px 16px 0' }}><Divider style={{ borderColor: '#ffffff13', margin: 0 }} /><Text style={{ color: '#737186', fontSize: 10, letterSpacing: 1.8 }}>MAKE SOMETHING<br />WORTH IMAGINING.</Text><Flex align="center" gap={8} style={{ color: '#737186' }}>{icon(ShieldCheck, 13)}<Text style={{ color: '#737186', fontSize: 10 }}>你的专属创作空间</Text></Flex></Flex>
       </Flex></Layout.Sider>}
-      <Layout style={{ minWidth: 0, background: 'transparent' }}>
-        <Flex align="center" justify="space-between" wrap gap={14} style={{ padding: screens.md ? '14px 26px' : '12px 16px', background: '#1a1b25', borderBottom: '1px solid #282a39' }}>
+      <Layout style={{ minWidth: 0, minHeight: 0, height: '100%', overflow: 'hidden', background: 'transparent' }}>
+        <Flex id="ig-workspace-header" align="center" justify="space-between" wrap gap={14} style={{ flexShrink: 0, padding: screens.md ? '14px 26px' : '12px 16px', background: '#1a1b25', borderBottom: '1px solid #282a39' }}>
           <Text strong style={{ fontSize: 15 }}>{visiblePages.find(([name]) => name === currentPage)?.[1]}</Text>
           <Flex align="center" gap={10} wrap><Avatar size={30} style={{ background: '#29263d', color: '#b9adff' }}>{identity.username.slice(0, 1).toUpperCase()}</Avatar><Text id="frame-identity" style={{ fontSize: 12 }}>{identity.username} · {roles[identity.role]}</Text>
             {adminSurface ? <Button id="frame-studio-link" href="/" size="small" icon={icon(ArrowLeft, 13)}>返回推理平台</Button> : identity.admin && <Button id="frame-admin-link" href="/admin" size="small" icon={icon(ArrowUpRight, 13)}>管理后台</Button>}
             <Button id="frame-logout" type="text" size="small" icon={icon(LogOut, 14)} onClick={logout}>退出</Button>
           </Flex>
         </Flex>
-        {!screens.lg && <Flex wrap gap={4} style={{ padding: '12px 14px', background: '#13141d' }}>{visiblePages.map(([name, label, Icon]) => <Button key={name} data-page={name} aria-pressed={currentPage === name} onClick={() => navigate(name)} icon={icon(Icon, 14)} type="text" size="small" style={{ color: currentPage === name ? '#d8d0ff' : '#9392a7', background: currentPage === name ? '#ffffff12' : 'transparent' }}>{label}</Button>)}</Flex>}
-        <Layout.Content style={{ padding: screens.xl ? '24px 30px' : screens.md ? '22px 24px' : '20px 16px', minWidth: 0 }}>
+        {!screens.lg && <Flex wrap gap={4} style={{ flexShrink: 0, padding: '12px 14px', background: '#13141d' }}>{visiblePages.map(([name, label, Icon]) => <Button key={name} data-page={name} aria-pressed={currentPage === name} onClick={() => navigate(name)} icon={icon(Icon, 14)} type="text" size="small" style={{ color: currentPage === name ? '#d8d0ff' : '#9392a7', background: currentPage === name ? '#ffffff12' : 'transparent' }}>{label}</Button>)}</Flex>}
+        <Layout.Content id="ig-workspace-scroll" ref={contentRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', scrollbarGutter: 'stable', padding: screens.xl ? '24px 30px' : screens.md ? '22px 24px' : '20px 16px', minWidth: 0 }}>
           {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 20 }} />}
           <Flex vertical data-screen={currentPage}>
             {keepAlive('generate', <Generate />)}
-            {keepAlive('gallery', <Gallery />)}
+            {keepAlive('gallery', <Gallery active={currentPage === 'gallery'} />)}
             {keepAlive('backends', <Backends active={currentPage === 'backends'} />)}
             {keepAlive('models', <ModelDefaults />)}
             {keepAlive('loras', <ModelDefaults loraOnly />)}
@@ -143,8 +145,8 @@ function Workspace({ identity, setIdentity, onLogout, passwordChanged }) {
             {keepAlive('settings', <SettingsPage />)}
             {keepAlive('account', <Account />)}
           </Flex>
+        <Flex justify="space-between" gap={12} wrap style={{ marginTop: 24, borderTop: '1px solid #282a39', padding: '16px 26px' }}><Text id="ig-cluster-foot" type="secondary" style={{ fontSize: 11 }}>模型与 LoRA 自动同步</Text><Text type="secondary" style={{ fontSize: 10, letterSpacing: 1.6 }}>FRAME · CREATE WITH INTENTION</Text></Flex>
         </Layout.Content>
-        <Flex justify="space-between" gap={12} wrap style={{ borderTop: '1px solid #282a39', padding: '16px 26px' }}><Text id="ig-cluster-foot" type="secondary" style={{ fontSize: 11 }}>模型与 LoRA 自动同步</Text><Text type="secondary" style={{ fontSize: 10, letterSpacing: 1.6 }}>FRAME · CREATE WITH INTENTION</Text></Flex>
       </Layout>
     </Layout>
   </StudioContext.Provider>;
