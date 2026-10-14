@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
-import { Alert, App, Button, Card, Col, Collapse, Descriptions, Empty, Flex, Form, Image, Input, InputNumber, Modal, Pagination, Row, Select, Space, Spin, Switch, Table, Tag, Typography } from 'antd';
-import { ArrowRight, Boxes, Check, Download, History, KeyRound, Layers3, Plus, RefreshCw, Search, Settings2, SlidersHorizontal } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, App, Button, Card, Col, Collapse, Descriptions, Empty, Flex, Form, Image, Input, InputNumber, Modal, Pagination, Progress, Row, Select, Space, Spin, Switch, Table, Tag, Tooltip, Typography } from 'antd';
+import { ArrowDownToLine, ArrowRight, ArrowUpFromLine, Boxes, Check, Download, History, KeyRound, Layers3, Plus, RefreshCw, Search, Settings2, SlidersHorizontal } from 'lucide-react';
 import { icon, PageHeading, useStudio } from './App.jsx';
 import { api, dateLabel, modelKey, roles, send, statusNames, taskNames } from './lib.js';
 import { ModelArt } from './Generate.jsx';
@@ -14,16 +14,52 @@ function useRemote(path) {
     api(path, { signal: controller.signal }).then(result => { if (!controller.signal.aborted) setData(result); }).catch(e => { if (!controller.signal.aborted) setError(e.message); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [path, version]);
-  return { data, loading, error, reload: () => setVersion(v => v + 1) };
+  const reload = useCallback(() => setVersion(v => v + 1), []);
+  return { data, loading, error, reload };
 }
 function LoadError({ error }) { return error ? <Alert type="error" title={error} showIcon style={{ marginBottom: 20 }} /> : null; }
 function Counter({ value, label, Icon }) { return <Card style={cardStyle}><Flex justify="space-between" align="center"><Flex vertical gap={3}><Text type="secondary" style={{ fontSize: 11 }}>{label}</Text><Text strong style={{ fontSize: 26 }}>{value}</Text></Flex><Flex align="center" justify="center" style={{ width: 44, height: 44, background: '#28243a', borderRadius: 12, color: '#a89be0' }}>{icon(Icon, 21)}</Flex></Flex></Card>; }
 
-export function Backends() {
+const gb = bytes => (bytes / 1073741824).toFixed(1);
+function ResourceMeter({ label, used, total, sub }) {
+  if (!total) return null;
+  const pct = Math.min(100, Math.round((used / total) * 100));
+  return <Flex vertical gap={4} style={{ minWidth: 200, maxWidth: 340 }}>
+    <Flex justify="space-between" align="center"><Text type="secondary" style={{ fontSize: 11 }}>{label}</Text><Text type="secondary" style={{ fontSize: 11 }}>{pct}%</Text></Flex>
+    <Progress percent={pct} showInfo={false} size="small" strokeColor={pct >= 90 ? '#ff7875' : '#a394ff'} />
+    <Text type="secondary" style={{ fontSize: 10 }}>{sub}</Text>
+  </Flex>;
+}
+function NodeResources({ resources }) {
+  if (!resources) return null;
+  const gpu = resources.gpu, host = resources.host_memory;
+  return <Row gutter={[24, 18]} style={{ marginTop: 16 }}>
+    {gpu && <Col xs={24} md={12}><ResourceMeter label={`GPU 显存${gpu.name ? ' · ' + gpu.name : ''}`} used={gpu.total_bytes - gpu.free_bytes} total={gpu.total_bytes} sub={`${gb(gpu.total_bytes - gpu.free_bytes)} / ${gb(gpu.total_bytes)} GB`} /></Col>}
+    {host && <Col xs={24} md={12}><ResourceMeter label="主机内存" used={host.total_bytes - host.available_bytes} total={host.total_bytes} sub={`${gb(host.total_bytes - host.available_bytes)} / ${gb(host.total_bytes)} GB · 可用 ${gb(host.available_bytes)} GB`} /></Col>}
+  </Row>;
+}
+const runtimeStates = { ready: { label: '已加载', color: 'success' }, loading: { label: '加载中', color: 'processing' }, unloading: { label: '卸载中', color: 'processing' }, error: { label: '异常', color: 'error' } };
+function ModelRuntimeTag({ runtime }) {
+  if (!runtime || !runtime.state || runtime.state === 'unloaded')
+    return <Tag variant="filled" style={{ fontSize: 10, margin: 0 }}>未加载</Tag>;
+  if (runtime.state === 'ready' && runtime.active_requests > 0)
+    return <Tag variant="filled" color="processing" style={{ fontSize: 10, margin: 0 }}>执行中 × {runtime.active_requests}</Tag>;
+  const state = runtimeStates[runtime.state] || { label: runtime.state, color: 'default' };
+  const tag = <Tag variant="filled" color={state.color} style={{ fontSize: 10, margin: 0 }}>{state.label}</Tag>;
+  return runtime.state === 'error' && runtime.last_error ? <Tooltip title={runtime.last_error}><span>{tag}</span></Tooltip> : tag;
+}
+
+export function Backends({ active = true }) {
   const { refresh } = useStudio(), { message } = App.useApp();
   const { data, error, loading, reload } = useRemote('/api/admin/backends');
   const [editor, setEditor] = useState(null), [saving, setSaving] = useState(false), [form] = Form.useForm();
+  useEffect(() => {
+    if (!active) return undefined;
+    const timer = setInterval(reload, 5000);
+    return () => clearInterval(timer);
+  }, [active, reload]);
   const nodes = data?.nodes || [];
+  const loadedCount = nodes.reduce((n, node) => n + node.models.filter(m => (node.runtime?.models || []).some(r => r.model_id === m.model_id && r.state === 'ready')).length, 0);
   function open(node) { setEditor(node || { enabled: true }); form.setFieldsValue({ name: node?.name || '', base_url: node?.base_url || '', inference_token: '', admin_token: '' }); }
   function close() { setEditor(null); form.resetFields(); }
   async function save(values) {
@@ -35,13 +71,35 @@ export function Backends() {
     try { if (type === 'sync') await send('/api/admin/backends/sync', 'POST', {}); else await send('/api/admin/backends/' + node.id, 'PUT', { name: node.name, base_url: node.base_url, enabled: !node.enabled }); reload(); await refresh(); }
     catch (e) { message.error(e.message); }
   }
+  async function lifecycle(node, model, verb) {
+    try {
+      await send(`/api/admin/nodes/${node.id}/models/${encodeURIComponent(model.model_id)}/${verb}`, 'POST', {});
+      message.success(verb === 'load' ? '已发出加载请求，大型模型准备需要一些时间。' : '已发出卸载请求。');
+      setTimeout(reload, 600);
+    } catch (e) { message.error(e.message); }
+  }
   return <>
     <PageHeading eyebrow="INFERENCE INFRASTRUCTURE" title="模型后端" description="管理推理节点，查看模型资源与运行状态。" extra={<Button id="ig-add-node" type="primary" icon={icon(Plus)} onClick={() => open(null)}>接入后端</Button>} />
-    <Row gutter={[16, 16]} style={{ marginBottom: 28 }}><Col xs={24} sm={8}><Counter value={nodes.length} label="已接入节点" Icon={Boxes} /></Col><Col xs={24} sm={8}><Counter value={nodes.filter(n => n.connected).length} label="在线节点" Icon={Check} /></Col><Col xs={24} sm={8}><Counter value={nodes.reduce((n, node) => n + node.models.length, 0)} label="已同步模型" Icon={Layers3} /></Col></Row>
+    <Row gutter={[16, 16]} style={{ marginBottom: 28 }}><Col xs={24} sm={8}><Counter value={nodes.length} label="已接入节点" Icon={Boxes} /></Col><Col xs={24} sm={8}><Counter value={nodes.filter(n => n.connected).length} label="在线节点" Icon={Check} /></Col><Col xs={24} sm={8}><Counter value={loadedCount} label="已加载模型" Icon={Layers3} /></Col></Row>
     <LoadError error={error} /><Spin spinning={loading}><Flex id="ig-nodes" vertical gap={16}>
       {nodes.map(node => <Card className="ig-node" key={node.id} style={cardStyle}><Flex justify="space-between" align="center" wrap gap={18}><Flex gap={14} align="center"><AvatarIcon Icon={Boxes} /><Flex vertical gap={5}><Flex gap={10} align="center"><Text strong>{node.name}</Text><Tag variant="filled" color={node.connected ? 'success' : 'default'}>{!node.enabled ? '已禁用' : node.quarantined ? '执行结果待确认' : node.connected ? '已连接' : '连接失败'}</Tag></Flex><Text type="secondary" style={{ fontSize: 11, overflowWrap: 'anywhere' }}>{node.base_url}</Text><Text type="secondary" style={{ fontSize: 11 }}>{node.models.length} 个模型 · {node.models.reduce((s, m) => s + m.loras.length, 0)} 个关联 LoRA</Text></Flex></Flex><Space wrap><Button data-action="sync" icon={icon(RefreshCw, 13)} onClick={() => action(node, 'sync')}>同步</Button><Button data-action="edit" onClick={() => open(node)}>编辑</Button><Button data-action="toggle" onClick={() => action(node, 'toggle')}>{node.enabled ? '禁用' : '启用'}</Button></Space></Flex>
+        <NodeResources resources={node.resources} />
         {node.error && <Alert type="warning" title={node.error} style={{ marginTop: 16 }} />}
-        <Collapse ghost style={{ marginTop: 16 }} items={[{ key: 'models', label: '模型资源与配置', children: <Flex vertical gap={18}>{node.models.map(m => <Flex key={modelKey(m)} vertical gap={8}><Text strong>{m.configuration.display_name}</Text><Text type="secondary">LoRA：{m.loras.map(l => l.display_name || l.lora_id).join('、') || '无'}</Text><Typography><pre style={{ maxHeight: 280, overflow: 'auto', fontSize: 11 }}>{JSON.stringify(m.configuration, null, 2)}</pre></Typography></Flex>)}</Flex> }]} />
+        <Collapse ghost style={{ marginTop: 16 }} items={[{ key: 'models', label: '模型资源与配置', children: <Flex vertical gap={18}>{node.models.map(m => {
+          const runtime = (node.runtime?.models || []).find(r => r.model_id === m.model_id);
+          const transitioning = ['loading', 'unloading'].includes(runtime?.state);
+          return <Flex key={modelKey(m)} vertical gap={8}>
+            <Flex justify="space-between" align="center" wrap gap={10}>
+              <Flex gap={10} align="center" wrap><Text strong>{m.configuration.display_name}</Text><ModelRuntimeTag runtime={runtime} /></Flex>
+              <Space>
+                <Button data-action="load" size="small" icon={icon(ArrowDownToLine, 13)} disabled={!node.enabled || !node.connected || runtime?.state === 'ready' || transitioning} onClick={() => lifecycle(node, m, 'load')}>加载</Button>
+                <Button data-action="unload" size="small" icon={icon(ArrowUpFromLine, 13)} disabled={runtime?.state !== 'ready' || runtime?.active_requests > 0} onClick={() => lifecycle(node, m, 'unload')}>卸载</Button>
+              </Space>
+            </Flex>
+            <Text type="secondary">LoRA：{m.loras.map(l => l.display_name || l.lora_id).join('、') || '无'}</Text>
+            <Typography><pre style={{ maxHeight: 280, overflow: 'auto', fontSize: 11 }}>{JSON.stringify(m.configuration, null, 2)}</pre></Typography>
+          </Flex>;
+        })}</Flex> }]} />
       </Card>)}{!nodes.length && !loading && <Empty description="尚未接入推理后端" />}
     </Flex></Spin>
     <Modal title={editor?.id ? '编辑模型后端' : '接入模型后端'} open={!!editor} onCancel={close} footer={null} destroyOnHidden>
@@ -145,7 +203,8 @@ export function SettingsPage() {
       <Form.Item label="最大等待任务数 / maxCount" name="max_count" extra="图片与视频共同计数；已有任务会继续处理。" rules={[{ required: true }]}><InputNumber id="ig-max" min={1} max={100000} precision={0} style={{ width: '100%' }} /></Form.Item>
       <Form.Item label="目录刷新间隔 / 秒" name="refresh_seconds" rules={[{ required: true }]}><InputNumber id="ig-refresh" min={1} max={3600} precision={0} style={{ width: '100%' }} /></Form.Item>
       <Form.Item label="节点状态有效期 / 秒" name="stale_seconds" rules={[{ required: true }]}><InputNumber id="ig-stale" min={1} max={86400} precision={0} style={{ width: '100%' }} /></Form.Item>
-      <Descriptions column={1} size="small" items={[{ key: 'timeout', label: '可用性查询超时', children: '1 秒' }, { key: 'release', label: '模型空闲释放', children: '1 小时 · 每分钟检查' }]} style={{ marginBottom: 24 }} />
+      <Form.Item label="模型空闲释放时间 / 秒" name="idle_release_seconds" extra="模型无调用且无等待任务，超过该时长后自动卸载释放显存；每分钟检查一次。" rules={[{ required: true }]}><InputNumber id="ig-idle-release" min={60} max={604800} precision={0} style={{ width: '100%' }} /></Form.Item>
+      <Descriptions column={1} size="small" items={[{ key: 'timeout', label: '可用性查询超时', children: '1 秒' }]} style={{ marginBottom: 24 }} />
       <Button type="primary" htmlType="submit" loading={saving}>保存参数</Button>{notice && <Alert id="ig-settings-message" type="success" title={notice} style={{ marginTop: 18 }} />}{saveError && <Alert type="error" title={saveError} style={{ marginTop: 18 }} />}
     </Form></Card>}
   </Spin></>;

@@ -985,6 +985,98 @@
         }
       }
     },
+    "/api/admin/nodes/{node_id}/models/{model_id}/load": {
+      "post": {
+        "summary": "Admin Load Model",
+        "operationId": "admin_load_model_api_admin_nodes__node_id__models__model_id__load_post",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Node Id"
+            }
+          },
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/nodes/{node_id}/models/{model_id}/unload": {
+      "post": {
+        "summary": "Admin Unload Model",
+        "operationId": "admin_unload_model_api_admin_nodes__node_id__models__model_id__unload_post",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Node Id"
+            }
+          },
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/settings": {
       "get": {
         "summary": "Get Settings",
@@ -1241,6 +1333,13 @@
             "maximum": 86400.0,
             "minimum": 1.0,
             "title": "Stale Seconds"
+          },
+          "idle_release_seconds": {
+            "type": "integer",
+            "maximum": 604800.0,
+            "minimum": 60.0,
+            "title": "Idle Release Seconds",
+            "default": 3600
           }
         },
         "additionalProperties": false,

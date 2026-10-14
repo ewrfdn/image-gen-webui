@@ -34,6 +34,17 @@ class Database:
             if "raw_request" not in task_columns:
                 await conn.execute(text("ALTER TABLE media_tasks ADD COLUMN raw_request JSON"))
                 await conn.execute(text("UPDATE media_tasks SET raw_request = request_body"))
+            setting_columns = await conn.run_sync(
+                lambda sync: {
+                    c["name"] for c in inspect(sync).get_columns("system_settings")
+                }
+            )
+            if "idle_release_seconds" not in setting_columns:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE system_settings ADD COLUMN idle_release_seconds INTEGER DEFAULT 3600"
+                    )
+                )
         async with self.sessions() as db:
             if await db.get(Setting, 1) is None:
                 db.add(Setting(id=1))

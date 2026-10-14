@@ -34,6 +34,7 @@ class SettingsInput(BaseModel):
     max_count: int = Field(ge=1, le=100000)
     refresh_seconds: int = Field(ge=1, le=3600)
     stale_seconds: int = Field(ge=1, le=86400)
+    idle_release_seconds: int = Field(default=3600, ge=60, le=604800)
 
 
 class ModelDefaultInput(BaseModel):
@@ -445,6 +446,8 @@ def create_app(config=None, client=None):
                     "connected": n.id in fresh,
                     "error": platform.registry.errors.get(n.id),
                     "models": fresh.get(n.id, {}).get("models", []),
+                    "runtime": fresh.get(n.id, {}).get("runtime", {}),
+                    "resources": fresh.get(n.id, {}).get("resources"),
                     "catalog_errors": fresh.get(n.id, {}).get("errors", []),
                     "quarantined": n.id in platform.registry.quarantined,
                 }
@@ -517,12 +520,25 @@ def create_app(config=None, client=None):
         await platform.registry.sync()
         return {"status": "synced"}
 
+    @app.post(
+        "/api/admin/nodes/{node_id}/models/{model_id}/load",
+        dependencies=[Depends(admin)],
+        status_code=202,
+    )
+    async def admin_load_model(node_id: str, model_id: str):
+        return await platform.load_model(node_id, model_id)
+
+    @app.post(
+        "/api/admin/nodes/{node_id}/models/{model_id}/unload",
+        dependencies=[Depends(admin)],
+        status_code=202,
+    )
+    async def admin_unload_model(node_id: str, model_id: str):
+        return await platform.unload_model(node_id, model_id)
+
     @app.get("/api/admin/settings", dependencies=[Depends(admin)])
     async def get_settings():
-        return platform.settings | {
-            "query_timeout_seconds": 1,
-            "idle_release_seconds": 3600,
-        }
+        return platform.settings | {"query_timeout_seconds": 1}
 
     @app.put("/api/admin/settings", dependencies=[Depends(admin)])
     async def settings(payload: SettingsInput):

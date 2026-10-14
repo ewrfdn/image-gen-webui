@@ -119,6 +119,14 @@ class Backend:
                 else 0
             )
             return httpx.Response(200, json=self.runtime())
+        if path == "/internal/v1/resources":
+            return httpx.Response(
+                200,
+                json={
+                    "host_memory": {"total_bytes": 1000, "available_bytes": 400},
+                    "gpu": None,
+                },
+            )
         if path.endswith("/load"):
             self.loaded = path.split("/")[-2]
             return httpx.Response(200, json={"state": "ready"})
@@ -368,6 +376,73 @@ async def test_release_only_after_idle_hour_and_no_waiting_tasks(setup):
     p.registry.last_invoked[key] = time.monotonic() - 3601
     await p.release_idle()
     assert backend.unloads == 1
+
+
+@pytest.mark.asyncio
+async def test_idle_release_threshold_is_configurable(setup):
+    p, api, backend = setup
+    backend.loaded = "test-image"
+    await p.registry.sync()
+    response = await api.put(
+        "/api/admin/settings",
+        json={
+            "max_count": 100,
+            "refresh_seconds": 5,
+            "stale_seconds": 15,
+            "idle_release_seconds": 120,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["idle_release_seconds"] == 120
+    key = ("test-image", "r1")
+    p.registry.last_invoked[key] = time.monotonic() - 119
+    await p.release_idle()
+    assert backend.unloads == 0
+    p.registry.last_invoked[key] = time.monotonic() - 121
+    await p.release_idle()
+    assert backend.unloads == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_load_and_unload_model(setup):
+    p, api, backend = setup
+    nodes = (await api.get("/api/admin/backends")).json()["nodes"]
+    assert nodes[0]["resources"]["host_memory"]["total_bytes"] == 1000
+    assert nodes[0]["runtime"]["models"] == []
+    # Nothing resident yet: unload is rejected, load is accepted.
+    assert (
+        await api.post("/api/admin/nodes/node-a/models/test-image/unload")
+    ).status_code == 409
+    response = await api.post("/api/admin/nodes/node-a/models/test-image/load")
+    assert response.status_code == 202
+    assert response.json()["status"] == "loading"
+    await drain(p)
+    assert backend.loaded == "test-image"
+    nodes = (await api.get("/api/admin/backends")).json()["nodes"]
+    runtime = nodes[0]["runtime"]["models"]
+    assert runtime and runtime[0]["state"] == "ready"
+    # Waiting tasks protect the resident model from manual unload.
+    assert (
+        await api.post("/api/tasks", json={"model": "test-image", "prompt": "a"})
+    ).status_code == 202
+    assert (
+        await api.post("/api/admin/nodes/node-a/models/test-image/unload")
+    ).status_code == 409
+    async with p.db.sessions() as db:
+        row = (await db.scalars(select(Task))).first()
+        await db.delete(row)
+        await db.commit()
+    response = await api.post("/api/admin/nodes/node-a/models/test-image/unload")
+    assert response.status_code == 202
+    assert response.json()["status"] == "unloading"
+    await drain(p)
+    assert backend.unloads == 1 and backend.loaded is None
+    assert (
+        await api.post("/api/admin/nodes/node-a/models/missing/load")
+    ).status_code == 404
+    assert (
+        await api.post("/api/admin/nodes/node-b/models/test-image/load")
+    ).status_code == 404
 
 
 @pytest.mark.asyncio

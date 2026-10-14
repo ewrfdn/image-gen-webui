@@ -34,7 +34,12 @@ class Platform:
         self.registry = Registry(self)
         self.assets = AssetService(self)
         self.generation = GenerationService(self)
-        self.settings = {"max_count": 100, "refresh_seconds": 5, "stale_seconds": 15}
+        self.settings = {
+            "max_count": 100,
+            "refresh_seconds": 5,
+            "stale_seconds": 15,
+            "idle_release_seconds": 3600,
+        }
         self.admission_lock = asyncio.Lock()
         self.background_tasks = set()
         self.stop_event = asyncio.Event()
@@ -586,7 +591,7 @@ class Platform:
                         key in protected
                         or time.monotonic()
                         - self.registry.last_invoked.get(key, time.monotonic())
-                        < 3600
+                        < self.settings["idle_release_seconds"]
                     ):
                         continue
                     self.registry.reserved.add(node_id)
@@ -602,3 +607,148 @@ class Platform:
                     finally:
                         self.registry.reserved.discard(node_id)
         await self.registry.sync()
+
+    @staticmethod
+    def _runtime_model(snap, model_id):
+        return next(
+            (
+                r
+                for r in snap.get("runtime", {}).get("models", [])
+                if r.get("model_id") == model_id
+            ),
+            None,
+        )
+
+    async def _managed_node(self, node_id):
+        async with self.db.sessions() as db:
+            node = await db.get(Node, node_id)
+        if node is None or not node.enabled:
+            raise ApiError(404, "node_not_found", "Backend not found")
+        return node
+
+    def _validate_managed_model(self, node_id, model_id):
+        snap = self.registry.snapshots.get(node_id)
+        if snap is None:
+            raise ApiError(409, "node_unreachable", "Backend has not been synchronized")
+        model = next(
+            (m for m in snap.get("models", []) if m["model_id"] == model_id), None
+        )
+        if model is None:
+            raise ApiError(404, "model_not_found", "Model not found on this backend")
+        if node_id in self.registry.quarantined:
+            raise ApiError(409, "node_quarantined", "Backend is quarantined")
+        if node_id in self.registry.reserved:
+            raise ApiError(
+                409, "node_busy", "Backend is reserved by another operation"
+            )
+        return snap, model
+
+    async def _spawn_managed_lifecycle(self, runner):
+        task = asyncio.create_task(runner)
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard)
+
+    async def load_model(self, node_id, model_id):
+        """Admin-triggered warm-up. Returns immediately; the node stays
+        reserved until the load finishes so dispatch cannot interleave."""
+        async with self.registry.lock:
+            node = await self._managed_node(node_id)
+            snap, model = self._validate_managed_model(node_id, model_id)
+            runtime = self._runtime_model(snap, model_id)
+            if runtime and runtime.get("active_requests"):
+                raise ApiError(409, "model_in_use", "Model is executing requests")
+            if runtime and runtime.get("state") in ("loading", "unloading"):
+                raise ApiError(
+                    409, "model_transitioning", "Model is already changing state"
+                )
+            occupied = [
+                r
+                for r in snap["runtime"].get("models", [])
+                if r.get("state") not in ("unloaded", None)
+                and r.get("model_id") != model_id
+            ]
+            if occupied:
+                raise ApiError(
+                    409,
+                    "slot_occupied",
+                    "Another model occupies the slot; unload it first",
+                )
+            self.registry.reserved.add(node_id)
+
+        async def runner():
+            try:
+                await self.registry.node_request(
+                    node,
+                    "POST",
+                    "/internal/v1/models/" + quote(model_id, safe="") + "/load",
+                    timeout=900,
+                )
+                # Manual warm-ups join the idle-release clock like task loads.
+                self.registry.last_invoked[
+                    (model_id, model["revision"])
+                ] = time.monotonic()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOG.exception("Manual load of %s on node %s failed", model_id, node_id)
+            finally:
+                self.registry.reserved.discard(node_id)
+                await self.registry.sync()
+
+        await self._spawn_managed_lifecycle(runner())
+        return {
+            "status": "loading",
+            "node_id": node_id,
+            "model_id": model_id,
+            "revision": model["revision"],
+        }
+
+    async def unload_model(self, node_id, model_id):
+        async with self.registry.lock:
+            node = await self._managed_node(node_id)
+            snap, model = self._validate_managed_model(node_id, model_id)
+            runtime = self._runtime_model(snap, model_id)
+            if runtime is None or runtime.get("state") in (None, "unloaded"):
+                raise ApiError(409, "model_not_loaded", "Model is not loaded")
+            if runtime.get("state") in ("loading", "unloading"):
+                raise ApiError(
+                    409, "model_transitioning", "Model is already changing state"
+                )
+            if runtime.get("active_requests"):
+                raise ApiError(409, "model_in_use", "Model is executing requests")
+            key = (model_id, model["revision"])
+            async with self.db.sessions() as db:
+                waiting = (
+                    await db.scalars(select(Task).where(Task.status.in_(WAITING)))
+                ).all()
+            if any((t.model_id, t.model_revision) == key for t in waiting):
+                raise ApiError(
+                    409, "model_protected", "Tasks are waiting for this model"
+                )
+            self.registry.reserved.add(node_id)
+
+        async def runner():
+            try:
+                await self.registry.node_request(
+                    node,
+                    "POST",
+                    "/internal/v1/models/" + quote(model_id, safe="") + "/unload",
+                    timeout=120,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOG.exception(
+                    "Manual unload of %s on node %s failed", model_id, node_id
+                )
+            finally:
+                self.registry.reserved.discard(node_id)
+                await self.registry.sync()
+
+        await self._spawn_managed_lifecycle(runner())
+        return {
+            "status": "unloading",
+            "node_id": node_id,
+            "model_id": model_id,
+            "revision": model["revision"],
+        }

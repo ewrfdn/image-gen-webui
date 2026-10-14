@@ -74,15 +74,28 @@ class Registry:
         async def one(node):
             try:
                 async with asyncio.timeout(1):
-                    result = (
-                        await self.node_request(node, "GET", "/internal/v1/catalog")
-                    ).json()
+                    # Resources are supplementary; never let them break the sync.
+                    catalog, resources = await asyncio.gather(
+                        self.node_request(node, "GET", "/internal/v1/catalog"),
+                        self.node_request(node, "GET", "/internal/v1/resources"),
+                        return_exceptions=True,
+                    )
+                if isinstance(catalog, BaseException):
+                    raise catalog
+                result = catalog.json()
                 if not isinstance(result.get("models"), list) or not isinstance(
                     result.get("runtime"), dict
                 ):
                     raise ValueError("Invalid catalogue response")
                 # Ignore malformed resources rather than exposing unusable UI choices.
                 result["models"] = [m for m in result["models"] if self.valid_model(m)]
+                if not isinstance(resources, BaseException):
+                    try:
+                        payload = resources.json()
+                        if isinstance(payload, dict):
+                            result["resources"] = payload
+                    except ValueError:
+                        pass
                 result.update(node=node, observed=time.monotonic())
                 self.snapshots[node.id] = result
                 self.errors.pop(node.id, None)

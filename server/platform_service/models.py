@@ -74,6 +74,7 @@ class Setting(Base):
     max_count: Mapped[int] = mapped_column(Integer, default=100)
     refresh_seconds: Mapped[int] = mapped_column(Integer, default=5)
     stale_seconds: Mapped[int] = mapped_column(Integer, default=15)
+    idle_release_seconds: Mapped[int] = mapped_column(Integer, default=3600)
 
 
 class ModelDefault(Base):

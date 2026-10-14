@@ -99,6 +99,11 @@ function Workspace({ identity, setIdentity, onLogout, passwordChanged }) {
   }, [refresh]);
   const visiblePages = navigation.filter(([name]) => adminSurface ? adminPages.includes(name) && (name !== 'users' || identity.role === 'super_admin') : userPages.includes(name));
   const currentPage = visiblePages.some(([name]) => name === page) ? page : adminSurface ? 'backends' : 'generate';
+  // Keep-alive: every visited page stays mounted (hidden via CSS) so prompts,
+  // filters and drafts survive navigation; only the live page is visible.
+  const [visited, setVisited] = useState(() => new Set([currentPage]));
+  useEffect(() => { setVisited(prev => prev.has(currentPage) ? prev : new Set(prev).add(currentPage)); }, [currentPage]);
+  const keepAlive = (name, element) => <div key={name} hidden={currentPage !== name}>{visited.has(name) && <Suspense fallback={<Spin style={{ padding: 50 }} />}>{element}</Suspense>}</div>;
   useEffect(() => { document.title = adminSurface ? 'FRAME 管理后台' : 'FRAME 创作工作台'; }, []);
   const navigate = name => { setPage(name); history.replaceState(null, '', '#' + name); };
   async function logout() {
@@ -126,18 +131,18 @@ function Workspace({ identity, setIdentity, onLogout, passwordChanged }) {
         {!screens.lg && <Flex wrap gap={4} style={{ padding: '12px 14px', background: '#13141d' }}>{visiblePages.map(([name, label, Icon]) => <Button key={name} data-page={name} aria-pressed={currentPage === name} onClick={() => navigate(name)} icon={icon(Icon, 14)} type="text" size="small" style={{ color: currentPage === name ? '#d8d0ff' : '#9392a7', background: currentPage === name ? '#ffffff12' : 'transparent' }}>{label}</Button>)}</Flex>}
         <Layout.Content style={{ padding: screens.xl ? '24px 30px' : screens.md ? '22px 24px' : '20px 16px', minWidth: 0 }}>
           {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 20 }} />}
-          <Flex vertical data-screen={currentPage}><Suspense fallback={<Spin style={{ padding: 50 }} />}>
-            {currentPage === 'generate' && <Generate />}
-            {currentPage === 'gallery' && <Gallery />}
-            {currentPage === 'backends' && <Backends />}
-            {currentPage === 'models' && <ModelDefaults />}
-            {currentPage === 'loras' && <ModelDefaults loraOnly />}
-            {currentPage === 'history' && <HistoryPage />}
-            {currentPage === 'keys' && <Keys />}
-            {currentPage === 'users' && <UsersPage />}
-            {currentPage === 'settings' && <SettingsPage />}
-            {currentPage === 'account' && <Account />}
-          </Suspense></Flex>
+          <Flex vertical data-screen={currentPage}>
+            {keepAlive('generate', <Generate />)}
+            {keepAlive('gallery', <Gallery />)}
+            {keepAlive('backends', <Backends active={currentPage === 'backends'} />)}
+            {keepAlive('models', <ModelDefaults />)}
+            {keepAlive('loras', <ModelDefaults loraOnly />)}
+            {keepAlive('history', <HistoryPage />)}
+            {keepAlive('keys', <Keys />)}
+            {keepAlive('users', <UsersPage />)}
+            {keepAlive('settings', <SettingsPage />)}
+            {keepAlive('account', <Account />)}
+          </Flex>
         </Layout.Content>
         <Flex justify="space-between" gap={12} wrap style={{ borderTop: '1px solid #282a39', padding: '16px 26px' }}><Text id="ig-cluster-foot" type="secondary" style={{ fontSize: 11 }}>模型与 LoRA 自动同步</Text><Text type="secondary" style={{ fontSize: 10, letterSpacing: 1.6 }}>FRAME · CREATE WITH INTENTION</Text></Flex>
       </Layout>
