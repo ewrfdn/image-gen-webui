@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, App, Button, Card, Col, Empty, Flex, Form, Grid, Image, Input, InputNumber, Row, Select, Slider, Spin, Tag, Typography, Upload } from 'antd';
+import { Alert, App, Button, Card, Col, Empty, Flex, Form, Grid, Input, InputNumber, Row, Select, Slider, Spin, Tag, Typography, Upload } from 'antd';
 import { Check, Download, ImagePlus, Layers3, Maximize2, Plus, Sparkles, WandSparkles } from 'lucide-react';
+import ArtworkModal from './ArtworkModal.jsx';
 import { icon, PageHeading, useStudio } from './App.jsx';
 import { api, request, dateLabel, modelKey, send, sizeChoices, taskNames } from './lib.js';
 
@@ -28,6 +29,7 @@ export default function Generate() {
   const [lora, setLora] = useState([]), [scale, setScale] = useState(1), [files, setFiles] = useState([]);
   const [ratio, setRatio] = useState(''), [size, setSize] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [steps, setSteps] = useState(null), [guidance, setGuidance] = useState(null), [seed, setSeed] = useState(null), [loraScales, setLoraScales] = useState({});
+  const [previewTaskId, setPreviewTaskId] = useState(null);
   const [taskId, setTaskId] = useState(null);
   const model = catalog.models.find(m => modelKey(m) === selection) || catalog.models.find(m => m.status !== 'unavailable') || catalog.models[0];
   const selectedKey = model ? modelKey(model) : '';
@@ -51,6 +53,7 @@ export default function Generate() {
     const draft = generationDraft;
     const sourceModel = catalog.models.find(m => m.model_id === draft.model_id && m.revision === draft.model_revision);
     if (!sourceModel) { setError('原模型版本已不可用，请重新选择模型。'); setGenerationDraft(null); return; }
+    if (selectedKey !== modelKey(sourceModel)) { setSelection(modelKey(sourceModel)); return; }
     const options = sizeChoices(sourceModel.configuration.generation);
     const requested = draft.parameters.size;
     const matching = options.find(r => r.sizes.some(s => s.value === requested));
@@ -62,7 +65,7 @@ export default function Generate() {
     setLoraScales(Object.fromEntries(draft.loras.map(l => [l.lora_id, l.scale])));
     setFiles((draft.references || []).map((f, i) => ({ uid: f.id, name: `参考图片 ${i + 1}`, status: 'done', url: f.url, type: f.mime, size: f.size, remote: true })));
     setGenerationDraft(null); message.success('已复制生成参数，可修改后再生成');
-  }, [generationDraft, catalog.models.length]);
+  }, [generationDraft, catalog.models.length, selectedKey]);
   const currentRatio = choices.find(r => r.ratio === ratio && r.sizes.some(s => s.value === size)) || choices.find(r => r.sizes.some(s => s.value === size)) || choices.find(r => r.isDefault) || choices[0];
   const currentSize = currentRatio?.sizes.some(s => s.value === size) ? size : currentRatio?.sizes.find(s => s.isDefault)?.value || currentRatio?.sizes[0]?.value || '';
   const selectedLoras = compatibleLoras.filter(l => lora.includes(l.lora_id));
@@ -128,7 +131,10 @@ export default function Generate() {
         <Card id="ig-result" data-signature={task ? task.id + '|' + task.status : ''} styles={{ body: { padding: screens.md ? 26 : 20 } }} style={{ background: '#161720', minHeight: screens.xl ? 580 : screens.lg ? 460 : 340, borderColor: '#2c2d3c' }}>
           {task ? <Flex vertical align="center" gap={18}>
             {!task.files.length && <Flex vertical align="center" justify="center" gap={18} style={{ minHeight: 310 }}><Spin spinning={!['failed', 'unknown'].includes(task.status)} /><Text strong>{taskNames[task.status]}</Text><Text type="secondary" style={{ fontSize: 11 }}>任务 {task.id.slice(0, 8)}</Text></Flex>}
-            {task.files.map(file => <Flex vertical gap={16} align="center" key={file.id} style={{ width: '100%' }}>{file.mime.startsWith('video/') ? <video controls src={file.url} style={{ width: '100%', maxHeight: 570, borderRadius: 12 }} /> : <Image src={file.url} alt="生成结果" style={{ maxHeight: 570, objectFit: 'contain', borderRadius: 12 }} />}<Button href={file.url} download={file.storage_key.split('/').pop()} icon={icon(Download)}>下载{file.mime.startsWith('video/') ? '视频' : '图片'}</Button></Flex>)}
+            {task.files.length > 0 && (task.files[0].mime.startsWith('video/') ? <Flex vertical gap={16} align="center" style={{ width: '100%' }}><video controls src={task.files[0].url} style={{ width: '100%', maxHeight: 570, borderRadius: 12 }} /><Button href={task.files[0].url} download={task.files[0].storage_key.split('/').pop()} icon={icon(Download)}>下载视频</Button></Flex> : <div className="ig-result-preview">
+              <button type="button" id="ig-open-result" className="ig-result-cover" aria-label="查看生成结果" onClick={() => setPreviewTaskId(task.id)}><img src={task.files[0].url} alt="生成结果" /><span className="ig-result-zoom">{icon(Maximize2, 16)} 查看作品</span>{task.files.length > 1 && <span className="ig-image-count">{icon(Layers3, 13)} {task.files.length}</span>}</button>
+              <Flex className="ig-result-actions" justify="space-between" align="center" gap={12}><Text type="secondary" style={{ fontSize: 11 }}>共 {task.files.length} 张 · {task.parameters.size}</Text><Button id="ig-result-download" icon={icon(Download, 15)} onClick={() => setPreviewTaskId(task.id)}>查看与下载</Button></Flex>
+            </div>)}
             {task.error && <Alert type="error" title={task.error} showIcon style={{ width: '100%' }} />}
             {task.status === 'unknown' && identity.admin && <Button onClick={retry}>确认重新生成</Button>}
           </Flex> : <Flex vertical align="center" justify="center" gap={15} style={{ minHeight: screens.xl ? 526 : 350 }}>
@@ -140,5 +146,6 @@ export default function Generate() {
         <Flex id="ig-task-list" vertical gap={8}>{tasks.slice(0, 5).map(t => <Button key={t.id} data-task={t.id} onClick={() => setTaskId(t.id)} type="text" style={{ height: 'auto', padding: '12px 14px', background: task?.id === t.id ? '#28243a' : '#1a1b2599', textAlign: 'left', whiteSpace: 'normal' }}><Flex align="center" justify="space-between" gap={12} style={{ width: '100%' }}><Flex vertical gap={3} style={{ minWidth: 0, flex: 1 }}><Text ellipsis style={{ fontSize: 12 }}>{t.prompt || t.model_id}</Text><Text type="secondary" style={{ fontSize: 10 }}>{t.model_id} · {dateLabel(t.created_at)}</Text></Flex><Tag variant="filled" color={t.status === 'succeeded' ? 'success' : t.status === 'failed' ? 'error' : 'default'} style={{ margin: 0, fontSize: 10 }}>{taskNames[t.status]}</Tag></Flex></Button>)}{!tasks.length && <Text type="secondary" style={{ fontSize: 12, padding: 14 }}>还没有作品，开始你的第一次创作吧。</Text>}</Flex>
       </Col>
     </Row>
+    <ArtworkModal task={tasks.find(t => t.id === previewTaskId) || null} onClose={() => setPreviewTaskId(null)} onDeleted={id => { if (taskId === id) setTaskId(null); }} />
   </>;
 }

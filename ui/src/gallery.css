@@ -43,3 +43,11 @@
 @media (max-width: 1100px) { .ig-detail-layout { padding: 20px; gap: 16px; grid-template-columns: minmax(0, 1fr) 330px; }.ig-data-card { padding: 24px; }.ig-detail-heading { display: none; }.ig-detail-toolbar { padding: 16px; }.ig-detail-stage { padding-inline: 54px; } }
 @media (max-width: 767px) { .ig-detail-layout { display: block; overflow-y: auto; padding: 12px; }.ig-detail-viewer { height: min(72dvh, 680px); min-height: 380px; border-radius: 18px; margin-bottom: 14px; }.ig-detail-toolbar { gap: 4px; padding: 12px; }.ig-detail-toolbar .ant-flex { gap: 5px !important; }.ig-detail-toolbar .ant-btn { width: 32px; height: 32px; }.ig-detail-toolbar .ant-btn-primary { width: auto; font-size: 11px; padding-inline: 12px; }.ig-detail-stage { padding: 6px 42px; }.ig-image-prev.ant-btn { left: 9px; }.ig-image-next.ant-btn { right: 9px; }.ig-image-prev.ant-btn, .ig-image-next.ant-btn { width: 28px; height: 28px; }.ig-image-pagination { padding: 15px 12px 17px; gap: 12px; }.ig-detail-sidebar { overflow: visible; border-radius: 18px; }.ig-data-card { padding: 23px; }.ig-data-section { padding-block: 20px; } }
 @media (prefers-reduced-motion: reduce) { .ig-artwork-card, .ig-gallery-open img, .ig-page-dots button { transition: none; } }
+
+.ig-result-preview { width: 100%; min-width: 0; }
+.ig-result-cover { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; height: clamp(280px, 52vh, 520px); padding: 16px; background: #10131b; border: 1px solid #ffffff0b; border-radius: 16px; overflow: hidden; cursor: pointer; }
+.ig-result-cover img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; border-radius: 6px; }
+.ig-result-zoom { position: absolute; display: flex; align-items: center; gap: 7px; bottom: 16px; left: 50%; transform: translateX(-50%); color: #e4deef; background: #171923cf; border: 1px solid #ffffff16; border-radius: 24px; padding: 8px 13px; font-size: 11px; backdrop-filter: blur(12px); }
+.ig-result-cover:hover { border-color: #b5a4ed45; }.ig-result-cover:focus-visible { outline: 2px solid #a394ff; outline-offset: 4px; }
+.ig-result-actions { padding-top: 16px; }
+@media (max-width: 767px) { .ig-result-cover { height: min(48dvh, 400px); min-height: 240px; padding: 12px; } }
