@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, App, Button, Card, Col, Empty, Flex, Form, Grid, Image, Input, Row, Select, Slider, Spin, Tag, Typography, Upload } from 'antd';
+import { Alert, App, Button, Card, Col, Empty, Flex, Form, Grid, Image, Input, InputNumber, Row, Select, Slider, Spin, Tag, Typography, Upload } from 'antd';
 import { Check, Download, ImagePlus, Layers3, Maximize2, Plus, Sparkles, WandSparkles } from 'lucide-react';
 import { icon, PageHeading, useStudio } from './App.jsx';
-import { api, dateLabel, modelKey, send, sizeChoices, taskNames } from './lib.js';
+import { api, request, dateLabel, modelKey, send, sizeChoices, taskNames } from './lib.js';
 
 const { Text, Title } = Typography;
 export function ModelArt({ index = 0, large = false }) {
@@ -20,33 +20,57 @@ function SectionLabel({ number, children, extra }) {
 }
 
 export default function Generate() {
-  const { catalog, tasks, refresh, identity, navigate } = useStudio();
+  const { catalog, tasks, refresh, identity, navigate, generationDraft, setGenerationDraft } = useStudio();
   const { message, modal } = App.useApp();
   const screens = Grid.useBreakpoint();
-  const [selection, setSelection] = useState(''), [prompt, setPrompt] = useState('');
-  const [lora, setLora] = useState(''), [scale, setScale] = useState(1), [files, setFiles] = useState([]);
+  const [selection, setSelection] = useState(generationDraft ? `${generationDraft.model_id}|${generationDraft.model_revision}` : ''), [prompt, setPrompt] = useState('');
+  const [negativePrompt, setNegativePrompt] = useState(''), [count, setCount] = useState(1);
+  const [lora, setLora] = useState([]), [scale, setScale] = useState(1), [files, setFiles] = useState([]);
   const [ratio, setRatio] = useState(''), [size, setSize] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const [steps, setSteps] = useState(null), [guidance, setGuidance] = useState(null), [seed, setSeed] = useState(null), [loraScales, setLoraScales] = useState({});
   const [taskId, setTaskId] = useState(null);
   const model = catalog.models.find(m => modelKey(m) === selection) || catalog.models.find(m => m.status !== 'unavailable') || catalog.models[0];
   const selectedKey = model ? modelKey(model) : '';
   const g = model?.configuration.generation;
   const generationSignature = JSON.stringify(g);
-  const choices = useMemo(() => sizeChoices(g), [generationSignature]); // Catalogue polling must not reset a user's size selection.
+  const choices = useMemo(() => {
+    const options = sizeChoices(g);
+    const [w, h] = size.split('x').map(Number);
+    if (w && h && w % 16 === 0 && h % 16 === 0 && w % g?.dimension_multiple === 0 && h % g?.dimension_multiple === 0 && w >= g.width_min && w <= g.width_max && h >= g.height_min && h <= g.height_max && w * h <= g.max_pixels && !options.some(r => r.sizes.some(s => s.value === size))) options.push({ ratio: '原始尺寸', rw: w, rh: h, sizes: [{ value: size, label: `${w} × ${h}` }] });
+    return options;
+  }, [generationSignature, size]); // Catalogue polling must not reset a user's size selection.
   const compatibleLoras = (model?.loras || []).filter(l => (!l.model_id || l.model_id === model.model_id) && (!l.base_model_revision || l.base_model_revision === model.revision));
   const ref = model?.configuration.reference;
   useEffect(() => {
-    setLora(''); setScale(1); setError('');
-    const options = sizeChoices(g); setRatio(options.find(r => r.isDefault)?.ratio || options[0]?.ratio || ''); setSize(g?.default_size || '');
+    setLora([]); setScale(1); setLoraScales({}); setSteps(g?.default_steps); setGuidance(g?.default_guidance_scale); setSeed(g?.default_seed ?? null); setCount(1); setError('');
+    const options = sizeChoices(g); const preferred = options.find(r => r.isDefault) || options[0];
+    setRatio(preferred?.ratio || ''); setSize(preferred?.sizes.find(s => s.isDefault)?.value || preferred?.sizes[0]?.value || '');
   }, [selectedKey]);
-  const currentRatio = choices.find(r => r.ratio === ratio) || choices.find(r => r.isDefault) || choices[0];
-  const currentSize = currentRatio?.sizes.some(s => s.value === size) ? size : currentRatio?.sizes[0]?.value || '';
-  const selectedLora = compatibleLoras.find(l => l.lora_id === lora);
-  useEffect(() => { if (lora && !selectedLora) { setLora(''); setScale(1); } }, [lora, selectedLora]);
+  useEffect(() => {
+    if (!generationDraft || !catalog.models.length) return;
+    const draft = generationDraft;
+    const sourceModel = catalog.models.find(m => m.model_id === draft.model_id && m.revision === draft.model_revision);
+    if (!sourceModel) { setError('原模型版本已不可用，请重新选择模型。'); setGenerationDraft(null); return; }
+    const options = sizeChoices(sourceModel.configuration.generation);
+    const requested = draft.parameters.size;
+    const matching = options.find(r => r.sizes.some(s => s.value === requested));
+    setPrompt(draft.prompt); setNegativePrompt(draft.negative_prompt || '');
+    setRatio(matching?.ratio || '默认'); setSize(requested);
+    setCount(draft.parameters.n || draft.files.length || 1);
+    setSteps(draft.parameters.num_inference_steps); setGuidance(draft.parameters.guidance_scale);
+    setSeed(draft.parameters.seed ?? null); setLora(draft.loras.map(l => l.lora_id));
+    setLoraScales(Object.fromEntries(draft.loras.map(l => [l.lora_id, l.scale])));
+    setFiles((draft.references || []).map((f, i) => ({ uid: f.id, name: `参考图片 ${i + 1}`, status: 'done', url: f.url, type: f.mime, size: f.size, remote: true })));
+    setGenerationDraft(null); message.success('已复制生成参数，可修改后再生成');
+  }, [generationDraft, catalog.models.length]);
+  const currentRatio = choices.find(r => r.ratio === ratio && r.sizes.some(s => s.value === size)) || choices.find(r => r.sizes.some(s => s.value === size)) || choices.find(r => r.isDefault) || choices[0];
+  const currentSize = currentRatio?.sizes.some(s => s.value === size) ? size : currentRatio?.sizes.find(s => s.isDefault)?.value || currentRatio?.sizes[0]?.value || '';
+  const selectedLoras = compatibleLoras.filter(l => lora.includes(l.lora_id));
   const task = tasks.find(t => t.id === taskId) || (!taskId ? tasks[0] : null);
   const queueFull = catalog.queue_count >= catalog.max_count;
   const referenceError = files.length > (ref?.max_count || 0) || files.length < (ref?.min_count || 0) ? '参考文件数量不符合此模型要求。' : files.some(f => !ref?.mime_types.includes(f.type) || f.size > ref.max_file_bytes) ? '参考文件类型或大小不符合此模型要求。' : '';
-  const blocked = !model || model.status === 'unavailable' || queueFull || !!referenceError;
-  function changeModel(m) { setSelection(modelKey(m)); setLora(''); setScale(1); setError(''); }
+  const blocked = !model || !currentSize || model.status === 'unavailable' || queueFull || !!referenceError;
+  function changeModel(m) { setSelection(modelKey(m)); setLora([]); setScale(1); setError(''); }
   function changeRatio(key) {
     setRatio(key); const options = choices.find(r => r.ratio === key)?.sizes || [];
     setSize(options.find(s => s.value.startsWith('1024x') || s.value.endsWith('x1024'))?.value || options[0]?.value || '');
@@ -57,8 +81,8 @@ export default function Generate() {
     setBusy(true); setError('');
     try {
       const references = [];
-      for (const item of files) { const data = new FormData(); data.append('file', item.originFileObj || item); references.push((await api('/api/uploads', { method: 'POST', body: data })).id); }
-      const result = await send('/api/tasks', 'POST', { model: model.model_id, revision: model.revision, prompt: prompt.trim(), size: currentSize, references, loras: selectedLora ? [{ lora_id: selectedLora.lora_id, scale }] : [] });
+      for (const item of files) { const data = new FormData(); data.append('file', item.remote ? new File([await (await request(item.url)).blob()], 'reference.png', { type: item.type }) : item.originFileObj || item); references.push((await api('/api/uploads', { method: 'POST', body: data })).uri); }
+      const result = await send('/api/tasks', 'POST', { model: model.model_id, revision: model.revision, prompt: prompt.trim(), size: currentSize, image: references, n: Math.min(count, g?.max_count || 1), negative_prompt: negativePrompt, num_inference_steps: steps ?? g.default_steps, guidance_scale: guidance ?? g.default_guidance_scale, ...(seed != null ? { seed } : {}), lora: selectedLoras.map(l => ({ lora_id: l.lora_id, scale: loraScales[l.lora_id] ?? scale })) });
       setTaskId(result.id); setFiles([]); await refresh(); message.success('已加入生成队列');
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   }
@@ -75,23 +99,25 @@ export default function Generate() {
               </Button>)}
               {!catalog.models.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无模型，请联系管理员接入后端。" />}
             </Flex>
-            <Flex vertical style={{ marginTop: 26 }}><SectionLabel number="02" extra={<Text type="secondary" style={{ fontSize: 10 }}>{prompt.length} / 4000</Text>}>描述你的画面</SectionLabel>
+            <Flex vertical style={{ marginTop: 26 }}><SectionLabel number="02" extra={<Text type="secondary" style={{ fontSize: 10 }}>{prompt.length} / 4000</Text>}>正向提示词</SectionLabel>
               <Input.TextArea id="ig-prompt" aria-label="提示词" placeholder="光线、场景、风格… 描述你脑海中的画面。" value={prompt} onChange={e => setPrompt(e.target.value)} maxLength={4000} autoSize={{ minRows: 5, maxRows: 10 }} style={{ lineHeight: 1.9, padding: 14, background: '#14151e' }} />
             </Flex>
+            <Flex vertical gap={10} style={{ marginTop: 20 }}><Text strong>负向提示词</Text><Input.TextArea id="ig-negative-prompt" aria-label="负向提示词" value={negativePrompt} onChange={e => { setNegativePrompt(e.target.value); if (e.target.value.trim() && (guidance ?? 1) <= 1 && model?.configuration.architecture === 'qwen_image_21') setGuidance(2); }} maxLength={4000} autoSize={{ minRows: 2, maxRows: 6 }} placeholder="不希望出现的内容，例如模糊、水印、畸形手指" /><Text strong>生成张数</Text><Select id="ig-count" aria-label="生成张数" value={Math.min(count, g?.max_count || 1)} onChange={setCount} options={Array.from({ length: g?.max_count || 1 }, (_, i) => ({ value: i + 1, label: `${i + 1} 张` }))} /></Flex>
             <Flex vertical style={{ marginTop: 26 }}><SectionLabel number="03">画面尺寸</SectionLabel>
               <Flex wrap gap={7} id="ig-ratios" role="group" aria-label="画面比例">{choices.map(r => <Button key={r.ratio} data-ratio={r.ratio} aria-pressed={currentRatio?.ratio === r.ratio} onClick={() => changeRatio(r.ratio)} style={{ flex: 1, minWidth: 46, height: 65, padding: '9px 3px', background: currentRatio?.ratio === r.ratio ? '#2b253e' : '#1a1b25', borderColor: currentRatio?.ratio === r.ratio ? '#9a85ed' : '#303040', color: currentRatio?.ratio === r.ratio ? '#c4b4ff' : '#8e8ba5' }}><Flex vertical align="center" gap={6}><span aria-hidden="true" style={{ display: 'block', width: Math.round(23 * r.rw / Math.max(r.rw, r.rh)), height: Math.round(23 * r.rh / Math.max(r.rw, r.rh)), border: '1.5px solid currentColor', borderRadius: 3 }} /><Text style={{ fontSize: 10, color: 'inherit' }}>{r.ratio}</Text></Flex></Button>)}</Flex>
               <Text type="secondary" style={{ fontSize: 11, margin: '16px 0 8px' }}>分辨率</Text><Select id="ig-resolution" aria-label="分辨率" value={currentSize || undefined} onChange={setSize} options={currentRatio?.sizes || []} style={{ width: '100%' }} />
               <Text type="secondary" style={{ fontSize: 10, marginTop: 7 }}>{currentSize.replace('x', ' × ')} · {currentRatio?.ratio} 比例</Text>
             </Flex>
             <Flex vertical style={{ marginTop: 26 }}><SectionLabel number="04" extra={<Tag variant="filled" style={{ fontSize: 10 }}>可选</Tag>}>LoRA 风格增强</SectionLabel>
-              <Select id="ig-lora" aria-label="LoRA" value={selectedLora?.lora_id || ''} onChange={setLora} disabled={!compatibleLoras.length || !model?.configuration.lora.supported} options={[{ value: '', label: '不使用 LoRA' }, ...compatibleLoras.map(l => ({ value: l.lora_id, label: l.display_name || l.lora_id }))]} style={{ width: '100%' }} />
+              <Select id="ig-lora" aria-label="LoRA" mode="multiple" maxCount={model?.configuration.lora.max_count || 1} value={selectedLoras.map(l => l.lora_id)} placeholder="不使用 LoRA" onChange={setLora} disabled={!compatibleLoras.length || !model?.configuration.lora.supported} options={compatibleLoras.map(l => ({ value: l.lora_id, label: l.display_name || l.lora_id }))} style={{ width: '100%' }} />
               <Text type="secondary" style={{ fontSize: 10, marginTop: 8 }}>{compatibleLoras.length ? `仅展示 ${model.configuration.display_name} 关联的 ${compatibleLoras.length} 个 LoRA` : '当前模型尚未关联 LoRA'}</Text>
-              {selectedLora && <Flex vertical style={{ marginTop: 10 }}><Flex justify="space-between"><Text type="secondary" style={{ fontSize: 11 }}>风格强度</Text><Text style={{ fontSize: 11 }}>{scale.toFixed(2)}</Text></Flex><Slider aria-label="LoRA 强度" min={0} max={2} step={.05} value={scale} onChange={setScale} /></Flex>}
+              {selectedLoras.map(l => <Flex key={l.lora_id} vertical style={{ marginTop: 10 }}><Flex justify="space-between"><Text type="secondary" style={{ fontSize: 11 }}>{l.display_name || l.lora_id} · 强度</Text><Text style={{ fontSize: 11 }}>{(loraScales[l.lora_id] ?? scale).toFixed(2)}</Text></Flex><Slider aria-label={`${l.lora_id} 强度`} min={0} max={2} step={.05} value={loraScales[l.lora_id] ?? scale} onChange={value => setLoraScales(previous => ({ ...previous, [l.lora_id]: value }))} /></Flex>)}
             </Flex>
             {(ref?.supported || files.length > 0) && <Flex id="ig-reference-field" vertical gap={10} style={{ marginTop: 24 }}><Text strong style={{ fontSize: 12 }}>参考图片 <Text type="secondary" style={{ fontSize: 10 }}>可选</Text></Text>
               <Upload id="ig-reference" accept={ref?.mime_types.join(',')} multiple beforeUpload={() => false} fileList={files} onChange={({ fileList }) => setFiles(fileList)} disabled={!ref?.supported} listType="picture"><Button icon={icon(ImagePlus)} block>添加参考图片</Button></Upload>
               <Text type="secondary" style={{ fontSize: 10 }}>{ref?.supported ? `最多 ${ref.max_count} 张 · 单张 ${Math.round(ref.max_file_bytes / 1024 / 1024)} MB` : '此模型不支持参考文件，请移除已有文件。'}</Text>
             </Flex>}
+            <Flex gap={12} wrap style={{ marginTop: 24 }}><Flex vertical gap={6} style={{ flex: 1, minWidth: 90 }}><Text type="secondary">Steps</Text><InputNumber id="ig-steps" aria-label="Steps" min={1} max={g?.steps_max || 100} value={steps} onChange={setSteps} style={{ width: '100%' }} /></Flex><Flex vertical gap={6} style={{ flex: 1, minWidth: 90 }}><Text type="secondary">Guidance</Text><InputNumber id="ig-guidance" aria-label="Guidance" min={0} max={20} step={.1} value={guidance} onChange={setGuidance} style={{ width: '100%' }} /></Flex><Flex vertical gap={6} style={{ flex: 2, minWidth: 120 }}><Text type="secondary">Seed</Text><InputNumber id="ig-seed" aria-label="Seed" min={0} max={4294967295} precision={0} placeholder="随机" value={seed} onChange={setSeed} style={{ width: '100%' }} /></Flex></Flex>
             {(error || referenceError || queueFull || model?.status === 'unavailable') && <Alert id="ig-submit-error" type="error" showIcon title={error || referenceError || (queueFull ? '等待队列已满，请稍后再试。' : '此模型暂不可用。')} style={{ marginTop: 20 }} />}
             <Button id="ig-submit" type="primary" htmlType="submit" block loading={busy} disabled={blocked} icon={icon(WandSparkles, 17)} style={{ height: 48, marginTop: 26, background: blocked ? undefined : '#7664ce', borderColor: blocked ? undefined : '#7664ce' }}>{queueFull ? '队列已满' : model?.configuration.type === 'video' ? '生成视频' : '生成图片'}</Button>
           </Form>

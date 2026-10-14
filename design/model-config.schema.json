@@ -27,13 +27,14 @@
     "lora": {
       "type": "object", "additionalProperties": false,
       "required": ["supported", "max_count"],
-      "properties": {"supported": {"type": "boolean"}, "max_count": {"type": "integer", "minimum": 0, "maximum": 1}},
-      "allOf": [{"if": {"properties": {"supported": {"const": false}}}, "then": {"properties": {"max_count": {"const": 0}}}, "else": {"properties": {"max_count": {"const": 1}}}}]
+      "properties": {"supported": {"type": "boolean"}, "max_count": {"type": "integer", "minimum": 0, "maximum": 8}},
+      "allOf": [{"if": {"properties": {"supported": {"const": false}}}, "then": {"properties": {"max_count": {"const": 0}}}, "else": {"properties": {"max_count": {"minimum": 1, "maximum": 8}}}}]
     },
     "generation": {
       "type": "object", "additionalProperties": false,
       "required": ["default_size", "width_min", "width_max", "height_min", "height_max", "dimension_multiple", "max_pixels", "default_steps", "steps_max", "default_guidance_scale", "output_mime_types", "timeout_seconds"],
       "properties": {
+        "max_count": {"type": "integer", "minimum": 1, "maximum": 8},
         "default_size": {"type": "string", "pattern": "^[0-9]+x[0-9]+$"},
         "width_min": {"type": "integer", "minimum": 1}, "width_max": {"type": "integer", "minimum": 1},
         "height_min": {"type": "integer", "minimum": 1}, "height_max": {"type": "integer", "minimum": 1},

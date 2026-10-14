@@ -165,3 +165,16 @@ def test_loading_model_reports_present_source(project, admin_headers, monkeypatc
             finish.set()
             worker.join(4)
         assert results[0].status_code == 200
+
+
+def test_batch_sequential_fallback_and_base64_contract(project, admin_headers, infer_headers):
+    app, backend, root = project
+    with TestClient(app) as client:
+        client.post("/internal/v1/models/sdxl-base/load", headers=admin_headers)
+        result = client.post("/v1/images/generations", headers=infer_headers,
+            json={"model": "sdxl-base", "prompt": "batch", "n": 3, "seed": 7})
+        assert result.status_code == 200
+        assert len(result.json()["data"]) == 3 and len(backend.calls) == 3
+        invalid = client.post("/v1/images/generations", headers=infer_headers,
+            json={"model": "sdxl-base", "prompt": "a", "image": ["https://example.com/a.png"]})
+        assert invalid.status_code == 400

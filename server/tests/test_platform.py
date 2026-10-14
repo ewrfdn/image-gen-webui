@@ -2,6 +2,7 @@ import asyncio
 import base64
 import copy
 import io
+import json
 import time
 import os
 from pathlib import Path
@@ -131,7 +132,7 @@ class Backend:
             return httpx.Response(
                 200,
                 json={
-                    "data": [{"b64_json": base64.b64encode(png()).decode()}],
+                    "data": [{"b64_json": base64.b64encode(png()).decode()} for _ in range(json.loads(request.content).get("n", 1))],
                     "metadata": {"seed": 42},
                 },
             )
@@ -293,7 +294,10 @@ async def test_reference_image_and_video_flow(setup):
     assert (await api.get("/api/tasks/" + response.json()["id"])).json()[
         "status"
     ] == "succeeded"
-    assert any(r.url.path == "/v1/images/edits" for r in backend.requests)
+    sent = next(r for r in backend.requests if r.url.path == "/v1/images/generations")
+    import json
+    assert json.loads(sent.content)["image"] == [base64.b64encode(png()).decode()]
+    assert sent.headers["content-type"].startswith("application/json")
     backend.models = [model("video", True)]
     backend.loaded = None
     await p.registry.sync()
@@ -504,3 +508,157 @@ async def test_unavailable_prefix_does_not_starve_later_same_type_tasks(setup):
     assert (await api.get("/api/tasks/" + target)).json()["status"] == "pending"
     await drain(p)
     assert (await api.get("/api/tasks/" + target)).json()["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_assets_deduplicate_and_reuse_with_owner_checks(setup):
+    from platform_service.db import Asset, Blob
+    import json
+    p, api, backend = setup
+    backend.models = [model(references=True)]
+    await p.registry.sync()
+    uploads = await asyncio.gather(*[api.post("/api/uploads", files={"file": ("ref.png", png(), "image/png")}) for _ in range(3)])
+    assert all(r.status_code == 201 for r in uploads)
+    first = uploads[0].json()
+    assert len({r.json()["id"] for r in uploads}) == 1
+    async with p.db.sessions() as db:
+        assert await db.scalar(select(func.count()).select_from(Blob)) == 1
+        assert await db.scalar(select(func.count()).select_from(Asset)) == 1
+    other = await p.upload("user:other", png())
+    assert other["blob_id"] == first["blob_id"] and other["id"] != first["id"]
+    for image in (first["uri"], [first["uri"]]):
+        payload = {"model": "test-image", "prompt": "reuse", "image": image, "lora": "style", "negative_prompt": "blur"}
+        response = await api.post("/api/tasks", json=payload)
+        assert response.status_code == 202
+        await drain(p)
+        result = (await api.get("/api/tasks/" + response.json()["id"])).json()
+        assert result["status"] == "succeeded" and result["raw_request"] == payload
+        assert result["negative_prompt"] == "blur" and result["loras"][0]["lora_id"] == "style"
+    sent = [r for r in backend.requests if r.url.path == "/v1/images/generations"][-1]
+    assert json.loads(sent.content)["image"] == [base64.b64encode(png()).decode()]
+    rejected = await api.post("/api/tasks", json={"model": "test-image", "prompt": "a", "image": other["uri"]})
+    assert rejected.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_multiple_outputs_and_recovery(setup):
+    import json
+    p, api, backend = setup
+    backend.models[0]["configuration"]["generation"]["max_count"] = 3
+    await p.registry.sync()
+    handle = backend.handle
+    async def multiple(request):
+        if request.url.path == "/v1/images/generations":
+            backend.requests.append(request)
+            return httpx.Response(200, json={"created": 123, "usage": {"total_tokens": 42},
+                "data": [{"b64_json": base64.b64encode(png()).decode()} for _ in range(json.loads(request.content)["n"])],
+                "metadata": {"seed": 42}})
+        return await handle(request)
+    await p.client.aclose()
+    p.client = httpx.AsyncClient(transport=httpx.MockTransport(multiple))
+    p.registry.client = p.client
+    response = await api.post("/api/tasks", json={"model": "test-image", "prompt": "batch", "n": 3})
+    assert response.status_code == 202
+    await drain(p)
+    task_id = response.json()["id"]
+    result = (await api.get("/api/tasks/" + task_id)).json()
+    assert result["status"] == "succeeded" and len(result["files"]) == 3
+    for f in result["files"]:
+        assert (await api.get(f["url"])).content == png()
+    async with p.db.sessions() as db:
+        task = await db.get(Task, task_id)
+        assert task.raw_result["usage"]["total_tokens"] == 42
+        task.status = "unknown"
+        await db.commit()
+    await p.recover_artifacts()
+    recovered = (await api.get("/api/tasks/" + task_id)).json()
+    assert recovered["status"] == "succeeded" and len(recovered["files"]) == 3
+    for count in (0, True, 4, 1.5):
+        invalid = await api.post("/api/tasks", json={"model": "test-image", "prompt": "batch", "n": count})
+        assert invalid.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_url_and_base64_reference_conversion(setup):
+    import json
+    p, api, backend = setup
+    backend.models = [model(references=True)]
+    await p.registry.sync()
+    old_client = p.client
+    async def resource(request):
+        return httpx.Response(200, content=png(), headers={"content-type": "image/png"})
+    p.client = httpx.AsyncClient(transport=httpx.MockTransport(resource))
+    for image in ("https://resources.example/reference.png", base64.b64encode(png()).decode()):
+        response = await api.post("/api/tasks", json={"model": "test-image", "prompt": "reference", "image": image})
+        assert response.status_code == 202
+        await drain(p)
+        sent = [r for r in backend.requests if r.url.path == "/v1/images/generations"][-1]
+        assert json.loads(sent.content)["image"] == [base64.b64encode(png()).decode()]
+    await p.client.aclose()
+    p.client = old_client
+
+
+@pytest.mark.asyncio
+async def test_additive_raw_request_migration(setup):
+    from sqlalchemy import text
+    p, api, backend = setup
+    if p.db.engine.dialect.name != "sqlite":
+        pytest.skip("SQLite legacy-schema migration fixture")
+    response = await api.post("/api/tasks", json={"model": "test-image", "prompt": "legacy"})
+    task_id = response.json()["id"]
+    async with p.db.engine.begin() as conn:
+        await conn.execute(text("ALTER TABLE media_tasks DROP COLUMN raw_request"))
+    await p.db.initialize()
+    async with p.db.sessions() as db:
+        task = await db.get(Task, task_id)
+        assert task.raw_request == task.request_body
+
+
+@pytest.mark.asyncio
+async def test_delete_task_removes_all_media_and_attempts(setup):
+    from platform_service.db import Asset, Blob
+    p, api, backend = setup
+    backend.models = [model(references=True)]
+    backend.models[0]["configuration"]["generation"]["max_count"] = 3
+    await p.registry.sync()
+    uploaded = (await api.post("/api/uploads", files={"file": ("ref.png", png(), "image/png")})).json()
+    response = await api.post("/api/tasks", json={"model": "test-image", "prompt": "delete", "image": uploaded["uri"], "n": 3})
+    task_id = response.json()["id"]
+    await drain(p)
+    task = (await api.get('/api/tasks/' + task_id)).json()
+    assert len(task["files"]) == 3
+    async with p.db.sessions() as db:
+        rows = (await db.scalars(select(MediaFile).where(MediaFile.task_id == task_id))).all()
+    paths = [p.path(f.storage_key) for f in rows]
+    assert all(path.exists() for path in paths)
+    assert (await api.delete('/api/tasks/' + task_id)).status_code == 204
+    assert all(not path.exists() for path in paths)
+    assert not p.path('outputs/' + task_id).exists()
+    assert not p.path('references/' + task_id).exists()
+    assert (await api.get('/api/tasks/' + task_id)).status_code == 404
+    assert (await api.get(task["files"][0]["url"])).status_code == 404
+    async with p.db.sessions() as db:
+        assert await db.scalar(select(func.count()).select_from(Attempt).where(Attempt.task_id == task_id)) == 0
+        assert await db.scalar(select(func.count()).select_from(MediaFile).where(MediaFile.task_id == task_id)) == 0
+        assert await db.get(Asset, uploaded["id"]) is not None
+        assert await db.get(Blob, uploaded["blob_id"]) is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_task_ownership_and_active_guard(setup):
+    p, api, backend = setup
+    task_id = (await api.post('/api/tasks', json={"model": "test-image", "prompt": "keep"})).json()["id"]
+    from platform_service.service import ApiError
+    with pytest.raises(ApiError) as rejected:
+        await p.delete_task(task_id, 'another-owner')
+    assert rejected.value.status == 404
+    async with p.db.sessions() as db:
+        task = await db.get(Task, task_id)
+        task.status = 'running'
+        await db.commit()
+    assert (await api.delete('/api/tasks/' + task_id)).status_code == 409
+    async with p.db.sessions() as db:
+        task = await db.get(Task, task_id)
+        task.status = 'pending'
+        await db.commit()
+    assert (await api.delete('/api/tasks/' + task_id)).status_code == 204

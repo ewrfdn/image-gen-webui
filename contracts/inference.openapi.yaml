@@ -911,9 +911,18 @@
           },
           "n": {
             "type": "integer",
-            "const": 1,
+            "maximum": 8.0,
+            "minimum": 1.0,
             "title": "N",
             "default": 1
+          },
+          "image": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Image"
           },
           "response_format": {
             "type": "string",
@@ -977,7 +986,7 @@
               "$ref": "#/components/schemas/LoraSelection"
             },
             "type": "array",
-            "maxItems": 1,
+            "maxItems": 8,
             "title": "Loras"
           }
         },

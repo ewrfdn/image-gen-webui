@@ -81,6 +81,7 @@ function Workspace({ identity, setIdentity, onLogout, passwordChanged }) {
   const [catalog, setCatalog] = useState({ models: [], queue_count: 0, max_count: 100 });
   const [tasks, setTasks] = useState([]), [error, setError] = useState('');
   const [page, setPage] = useState((adminSurface ? adminPages : userPages).includes(location.hash.slice(1)) ? location.hash.slice(1) : adminSurface ? 'backends' : 'generate');
+  const [generationDraft, setGenerationDraft] = useState(null);
   const [historyFilter, setHistoryFilter] = useState({ q: '', user_id: '' });
   const active = useRef(true), polling = useRef(false);
   const refresh = useCallback(async () => {
@@ -105,7 +106,7 @@ function Workspace({ identity, setIdentity, onLogout, passwordChanged }) {
     onLogout();
     try { await send('/api/auth/logout', 'POST', {}); } catch (e) { message.error(e.message); }
   }
-  const context = { identity, catalog, tasks, refresh, navigate, historyFilter, setHistoryFilter, setIdentity, passwordChanged };
+  const context = { generationDraft, setGenerationDraft, identity, catalog, tasks, refresh, navigate, historyFilter, setHistoryFilter, setIdentity, passwordChanged };
   return <StudioContext.Provider value={context}>
     <Layout id="dgx-studio" style={{ minHeight: '100vh', maxWidth: 1920, margin: 'auto', background: '#111219' }}>
       {screens.lg && <Layout.Sider width={216} style={{ background: '#13141d', padding: '34px 18px', position: 'sticky', top: 0, height: '100vh', overflowY: 'auto' }}><Flex vertical style={{ minHeight: '100%' }}>

@@ -65,7 +65,7 @@ class QwenImage21Backend:
                           num_inference_steps=1, true_cfg_scale=1.0,
                           generator=torch.Generator(device=self.device).manual_seed(0))
 
-    def generate(self, request: GenerationRequest, lora: Lora | None, seed: int) -> bytes:
+    def generate(self, request: GenerationRequest, lora: Lora | list[Lora] | None, seed: int) -> bytes:
         import torch
 
         pipe = self.pipeline
@@ -90,10 +90,15 @@ class QwenImage21Backend:
             if lora:
                 adapter_attempted = True
                 try:
-                    state = validated_lora_state(pipe, lora)
-                    pipe.load_lora_weights(state, adapter_name="request")
-                    pipe.set_adapters(["request"], adapter_weights=[request.loras[0].scale])
-                    if not hasattr(pipe, "get_active_adapters") or "request" not in pipe.get_active_adapters():
+                    selected = lora if isinstance(lora, list) else [lora]
+                    names = []
+                    for index, item in enumerate(selected):
+                        name = "request" if len(selected) == 1 else f"request_{index}"
+                        state = validated_lora_state(pipe, item)
+                        pipe.load_lora_weights(state, adapter_name=name)
+                        names.append(name)
+                    pipe.set_adapters(names, adapter_weights=[v.scale for v in request.loras])
+                    if not hasattr(pipe, "get_active_adapters") or not set(names).issubset(pipe.get_active_adapters()):
                         raise RuntimeError("LoRA adapter was not activated")
                 except Exception as exc:
                     raise LoraIncompatible("LoRA weights could not be applied") from exc

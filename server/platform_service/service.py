@@ -10,8 +10,10 @@ import time
 from urllib.parse import quote
 import httpx
 from PIL import Image
-from sqlalchemy import func, select
-from .db import ApiKey, Attempt, Database, MediaFile, ModelDefault, Node, Setting, Task, now, uid
+from sqlalchemy import delete, func, select
+from .db import Database
+from .models import Attempt, MediaFile, ModelDefault, Setting, Task, Node, now, uid
+from .storage import write_atomic
 from .cluster import Registry, valid_size
 
 LOG = logging.getLogger(__name__)
@@ -19,9 +21,9 @@ WAITING = ("pending", "processing", "loading")
 TERMINAL = ("succeeded", "failed", "unknown")
 
 
-class ApiError(Exception):
-    def __init__(self, status, code, message):
-        self.status, self.code, self.message = status, code, message
+from .errors import ApiError
+from .assets import AssetService
+from .generation import GenerationService
 
 
 class Platform:
@@ -30,6 +32,8 @@ class Platform:
         self.db = Database(config.database_url)
         self.client = client or httpx.AsyncClient(follow_redirects=False)
         self.registry = Registry(self)
+        self.assets = AssetService(self)
+        self.generation = GenerationService(self)
         self.settings = {"max_count": 100, "refresh_seconds": 5, "stale_seconds": 15}
         self.admission_lock = asyncio.Lock()
         self.background_tasks = set()
@@ -107,40 +111,7 @@ class Platform:
         return target
 
     async def upload(self, owner, data):
-        if len(data) > 20 * 1024 * 1024:
-            raise ApiError(400, "file_too_large", "Reference limit is 20 MB per file")
-        try:
-            with Image.open(io.BytesIO(data)) as image:
-                image.verify()
-                mime = Image.MIME[image.format]
-            if mime not in ("image/png", "image/jpeg", "image/webp"):
-                raise ValueError("Unsupported image")
-        except Exception as exc:
-            raise ApiError(
-                400, "invalid_reference", "Reference must be a valid PNG, JPEG or WebP"
-            ) from exc
-        file_id = uid()
-        suffix = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[mime]
-        key = f"inputs/{file_id}/reference.{suffix}"
-        await asyncio.to_thread(write_atomic, self.path(key), data)
-        async with self.db.sessions() as db:
-            file = MediaFile(
-                id=file_id,
-                owner=owner,
-                role="reference",
-                storage_key=key,
-                mime=mime,
-                size=len(data),
-                sha256=hashlib.sha256(data).hexdigest(),
-            )
-            db.add(file)
-            await db.commit()
-        return {
-            "id": file_id,
-            "mime": mime,
-            "size": len(data),
-            "url": f"/api/files/{file_id}/content",
-        }
+        return await self.assets.upload(owner, data)
 
     async def models_with_defaults(self):
         async with self.db.sessions() as db:
@@ -152,179 +123,7 @@ class Platform:
         })) for m in self.registry.models()]
 
     async def submit(self, owner, payload, source="ui"):
-        if not self.ready:
-            raise ApiError(503, "registry_initializing", "Catalogue is initializing")
-        allowed = {
-            "model",
-            "revision",
-            "prompt",
-            "size",
-            "n",
-            "loras",
-            "references",
-            "seed",
-            "num_inference_steps",
-            "guidance_scale",
-            "negative_prompt",
-            "output_format",
-            "quality",
-            "response_format",
-        }
-        if set(payload) - allowed:
-            raise ApiError(
-                400, "unsupported_parameter", "Unsupported request parameter"
-            )
-        if (
-            payload.get("n", 1) != 1
-            or payload.get("output_format", "png") != "png"
-            or payload.get("quality", "auto") != "auto"
-        ):
-            raise ApiError(
-                400,
-                "unsupported_parameter",
-                "Only n=1, PNG and quality=auto are currently supported",
-            )
-        if payload.get("response_format", "b64_json") != "b64_json":
-            raise ApiError(
-                400,
-                "unsupported_parameter",
-                "Only b64_json is supported by Images compatibility",
-            )
-        prompt = payload.get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4000:
-            raise ApiError(
-                400, "invalid_prompt", "Prompt is required, maximum 4000 characters"
-            )
-        matches = [
-            m
-            for m in await self.models_with_defaults()
-            if m["model_id"] == payload.get("model")
-            and (not payload.get("revision") or m["revision"] == payload["revision"])
-        ]
-        if len(matches) != 1 or matches[0]["status"] == "unavailable":
-            raise ApiError(
-                409,
-                "model_unavailable",
-                "Model is unavailable or its revision is ambiguous",
-            )
-        model = matches[0]
-        c = model["configuration"]
-        body = dict(payload)
-        body["size"] = (
-            c["generation"]["default_size"]
-            if payload.get("size", "auto") == "auto"
-            else payload["size"]
-        )
-        body.setdefault("num_inference_steps", c["generation"]["default_steps"])
-        body.setdefault("guidance_scale", c["generation"]["default_guidance_scale"])
-        if c["generation"].get("default_seed") is not None:
-            body.setdefault("seed", c["generation"]["default_seed"])
-        if not valid_size(body["size"], c["generation"]):
-            raise ApiError(400, "unsupported_size", "Size is outside model limits")
-        selected_loras = payload.get("loras", [])
-        if (
-            not isinstance(selected_loras, list)
-            or len(selected_loras) > c["lora"]["max_count"]
-        ):
-            raise ApiError(400, "invalid_lora", "Invalid LoRA selection count")
-        loras = []
-        for selection in selected_loras:
-            if not isinstance(selection, dict) or set(selection) - {"lora_id", "scale"}:
-                raise ApiError(400, "invalid_lora", "Invalid LoRA selection")
-            available = [
-                l
-                for l in model.get("loras", [])
-                if l["lora_id"] == selection.get("lora_id")
-            ]
-            if not available or len({l["sha256"] for l in available}) != 1:
-                raise ApiError(
-                    400,
-                    "invalid_lora",
-                    "LoRA is unavailable or has conflicting versions",
-                )
-            scale = selection.get("scale", 1)
-            if not isinstance(scale, (int, float)) or not 0 <= scale <= 2:
-                raise ApiError(
-                    400, "invalid_lora", "LoRA scale must be between 0 and 2"
-                )
-            loras.append({**available[0], "scale": scale})
-        refs = payload.get("references", [])
-        if (
-            not isinstance(refs, list)
-            or not all(isinstance(v, str) for v in refs)
-            or len(set(refs)) != len(refs)
-        ):
-            raise ApiError(
-                400, "invalid_reference", "References must contain unique upload IDs"
-            )
-        if not c["reference"]["min_count"] <= len(refs) <= c["reference"]["max_count"]:
-            raise ApiError(
-                400, "invalid_reference", "Reference count is outside model limits"
-            )
-        # Validate numerical extensions before queueing, not after GPU dispatch.
-        checks = [
-            ("seed", 0, 2**32 - 1, int),
-            ("num_inference_steps", 1, c["generation"]["steps_max"], int),
-            ("guidance_scale", 0, 20, (int, float)),
-        ]
-        for key, low, high, kind in checks:
-            if key in body and (
-                isinstance(body[key], bool)
-                or not isinstance(body[key], kind)
-                or not low <= body[key] <= high
-            ):
-                raise ApiError(400, "invalid_parameter", f"Invalid {key}")
-        async with self.admission_lock, self.db.sessions() as db:
-            setting = await db.scalar(
-                select(Setting).where(Setting.id == 1).with_for_update()
-            )
-            count = await db.scalar(
-                select(func.count()).select_from(Task).where(Task.status.in_(WAITING))
-            )
-            if count >= setting.max_count:
-                raise ApiError(429, "queue_full", "Waiting queue is full")
-            reference_files = []
-            for file_id in refs:
-                file = await db.get(MediaFile, file_id)
-                if (
-                    not file
-                    or file.owner != owner
-                    or file.role != "reference"
-                    or file.task_id
-                ):
-                    raise ApiError(
-                        400,
-                        "invalid_reference",
-                        "Reference upload is missing or already used",
-                    )
-                if (
-                    file.mime not in c["reference"]["mime_types"]
-                    or file.size > c["reference"]["max_file_bytes"]
-                ):
-                    raise ApiError(
-                        400,
-                        "invalid_reference",
-                        "Reference type or size is outside model limits",
-                    )
-                reference_files.append(file)
-            task = Task(
-                id=uid(),
-                type=c["type"],
-                owner=owner,
-                source=source,
-                model_id=model["model_id"],
-                model_revision=model["revision"],
-                model_sha256=model["artifact_sha256"],
-                loras=loras,
-                capabilities=c,
-                request_body=body,
-            )
-            db.add(task)
-            await db.flush()
-            for i, file in enumerate(reference_files):
-                file.task_id, file.position = task.id, i
-            await db.commit()
-        return task.id
+        return await self.generation.submit(owner, payload, source)
 
     async def task_view(self, task_id, owner, admin=False):
         async with self.db.sessions() as db:
@@ -338,6 +137,8 @@ class Platform:
                     .order_by(MediaFile.position)
                 )
             ).all()
+            references = (await db.scalars(select(MediaFile).where(
+                MediaFile.task_id == task.id, MediaFile.role == "reference").order_by(MediaFile.position))).all()
             return {
                 k: getattr(task, k)
                 for k in (
@@ -355,9 +156,13 @@ class Platform:
                 )
             } | {
                 "prompt": task.request_body.get("prompt", ""),
+                "negative_prompt": task.request_body.get("negative_prompt", ""),
+                "loras": task.loras,
+                "raw_request": task.raw_request or task.request_body,
+                "references": [{"id": f.id, "url": f"/api/files/{f.id}/content", "mime": f.mime, "size": f.size} for f in references],
                 "parameters": {
                     **{k: v for k, v in task.request_body.items() if k in (
-                        "size", "seed", "num_inference_steps", "guidance_scale")},
+                        "size", "seed", "n", "negative_prompt", "num_inference_steps", "guidance_scale")},
                     **({"seed": task.raw_result["seed"]}
                        if task.raw_result and task.raw_result.get("seed") is not None else {}),
                 },
@@ -372,6 +177,28 @@ class Platform:
                     for f in files
                 ]
             }
+
+    async def delete_task(self, task_id, owner):
+        import shutil
+        # Serialize with node dispatch; only settled executions can be removed.
+        async with self.registry.lock, self.db.sessions() as db:
+            task = await db.scalar(select(Task).where(Task.id == task_id).with_for_update())
+            if task is None or task.owner != owner:
+                raise ApiError(404, "task_not_found", "Task not found")
+            if task.status not in ("succeeded", "failed", "pending"):
+                raise ApiError(409, "task_active", "Task is executing or its result is unknown")
+            files = (await db.scalars(select(MediaFile).where(MediaFile.task_id == task_id))).all()
+            paths = [self.path(f.storage_key) for f in files]
+            directories = [self.path(f"outputs/{task_id}"), self.path(f"references/{task_id}")]
+            await db.execute(delete(MediaFile).where(MediaFile.task_id == task_id))
+            await db.execute(delete(Attempt).where(Attempt.task_id == task_id))
+            await db.delete(task)
+            await db.commit()
+            for path in paths:
+                await asyncio.to_thread(path.unlink, missing_ok=True)
+            for path in directories:
+                if path.is_dir():
+                    await asyncio.to_thread(shutil.rmtree, path)
 
     async def dispatch(self):
         # Both media types use the same node reservation lock. Skip unserviceable tasks.
@@ -512,7 +339,7 @@ class Platform:
                 if k
                 not in (
                     "revision",
-                    "references",
+                    "references", "image", "lora", "watermark",
                     "output_format",
                     "quality",
                     "response_format",
@@ -529,40 +356,11 @@ class Platform:
             ]
             sent = True
             self.registry.last_invoked[key] = time.monotonic()
-            timeout = task.capabilities["generation"]["timeout_seconds"]
-            if task.type == "image" and not references:
-                response = await self.registry.node_request(
-                    node, "POST", "/v1/images/generations", timeout=timeout, json=body
-                )
-            else:
-                endpoint = "/v1/images/edits" if task.type == "image" else "/v1/videos"
-                multipart = [
-                    (
-                        "image[]",
-                        (
-                            f"ref-{i}",
-                            await asyncio.to_thread(
-                                self.path(f.storage_key).read_bytes
-                            ),
-                            f.mime,
-                        ),
-                    )
-                    for i, f in enumerate(references)
-                ]
-                fields = {
-                    k: (json.dumps(v) if isinstance(v, (list, dict)) else str(v))
-                    for k, v in body.items()
-                }
-                response = await self.registry.node_request(
-                    node,
-                    "POST",
-                    endpoint,
-                    timeout=timeout,
-                    data=fields,
-                    files=multipart
-                    if multipart
-                    else [("request", (None, json.dumps(body), "application/json"))],
-                )
+            timeout = task.capabilities["generation"]["timeout_seconds"] * task.request_body.get("n", 1)
+            if references:
+                body["image"] = [base64.b64encode(await asyncio.to_thread(self.path(f.storage_key).read_bytes)).decode() for f in references]
+            endpoint = "/v1/images/generations" if task.type == "image" else "/v1/videos"
+            response = await self.registry.node_request(node, "POST", endpoint, timeout=timeout, json=body)
             raw = response.json()
             if task.type == "video" and raw.get("id"):
                 async with self.db.sessions() as db:
@@ -613,20 +411,25 @@ class Platform:
                 current = await db.get(Task, task_id)
                 current.status, current.updated_at = "persisting", now()
                 await db.commit()
-            storage_key = f"outputs/{task_id}/{attempt_id}/0." + (
-                "png" if task.type == "image" else "mp4"
-            )
-            await asyncio.to_thread(write_atomic, self.path(storage_key), content)
-            manifest = {
-                "task_id": task_id,
-                "attempt_id": attempt_id,
-                "owner": task.owner,
-                "storage_key": storage_key,
-                "mime": mime,
-                "size": len(content),
-                "sha256": hashlib.sha256(content).hexdigest(),
-                "metadata": raw.get("metadata", {}),
-            }
+            contents = [content] if task.type == "video" else [base64.b64decode(item["b64_json"], validate=True) for item in raw["data"]]
+            if len(contents) != task.request_body.get("n", 1):
+                raise ApiError(500, "invalid_output", "Backend returned an unexpected image count")
+            outputs = []
+            for position, content in enumerate(contents):
+                if len(content) > 512 * 1024 * 1024:
+                    raise ApiError(500, "result_too_large", "Generated media exceeds storage limit")
+                if task.type == "image":
+                    with Image.open(io.BytesIO(content)) as image:
+                        image.verify()
+                        if image.format != "PNG":
+                            raise ApiError(500, "invalid_output", "Backend did not return a PNG")
+                storage_key = f"outputs/{task_id}/{attempt_id}/{position}." + ("png" if task.type == "image" else "mp4")
+                await asyncio.to_thread(write_atomic, self.path(storage_key), content)
+                outputs.append({"storage_key": storage_key, "mime": mime, "size": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(), "position": position})
+            manifest = {"task_id": task_id, "attempt_id": attempt_id, "owner": task.owner,
+                **outputs[0], "outputs": outputs, "metadata": raw.get("metadata", {}),
+                "raw_result": {**raw, "data": [{"b64_json": "<stored in media_files>"} for _ in contents]}}
             await asyncio.to_thread(
                 write_atomic,
                 self.path(f"outputs/{task_id}/{attempt_id}/completion.json"),
@@ -710,32 +513,19 @@ class Platform:
             task = await db.get(Task, manifest["task_id"])
             if task is None or task.attempt_id != manifest["attempt_id"]:
                 return
-            existing = await db.scalar(
-                select(MediaFile).where(
-                    MediaFile.storage_key == manifest["storage_key"]
-                )
-            )
-            if existing is None:
-                db.add(
-                    MediaFile(
-                        id=uid(),
-                        task_id=task.id,
-                        attempt_id=manifest["attempt_id"],
-                        owner=task.owner,
-                        role="output",
-                        storage_key=manifest["storage_key"],
-                        mime=manifest["mime"],
-                        size=manifest["size"],
-                        sha256=manifest["sha256"],
-                    )
-                )
+            for output in manifest.get("outputs", [manifest]):
+                existing = await db.scalar(select(MediaFile).where(MediaFile.storage_key == output["storage_key"]))
+                if existing is None:
+                    db.add(MediaFile(id=uid(), task_id=task.id, attempt_id=manifest["attempt_id"],
+                        owner=task.owner, role="output", position=output.get("position", 0),
+                        storage_key=output["storage_key"], mime=output["mime"], size=output["size"], sha256=output["sha256"]))
             task.status, task.error, task.completed_at, task.updated_at = (
                 "succeeded",
                 None,
                 now(),
                 now(),
             )
-            task.raw_result = manifest["metadata"]
+            task.raw_result = {**manifest.get("raw_result", {}), **manifest["metadata"]}
             attempt = await db.get(Attempt, manifest["attempt_id"])
             attempt.status, attempt.completed_at = "succeeded", now()
             await db.commit()
@@ -754,10 +544,13 @@ class Platform:
             manifest = self.path(f"outputs/{task.id}/{task.attempt_id}/completion.json")
             if manifest.exists():
                 data = json.loads(await asyncio.to_thread(manifest.read_text))
-                content = await asyncio.to_thread(
-                    self.path(data["storage_key"]).read_bytes
-                )
-                if hashlib.sha256(content).hexdigest() == data["sha256"]:
+                valid = True
+                for output in data.get("outputs", [data]):
+                    path = self.path(output["storage_key"])
+                    if not path.is_file() or hashlib.sha256(await asyncio.to_thread(path.read_bytes)).hexdigest() != output["sha256"]:
+                        valid = False
+                        break
+                if valid:
                     await self.complete(data)
 
     async def release_idle(self):
@@ -809,15 +602,3 @@ class Platform:
                     finally:
                         self.registry.reserved.discard(node_id)
         await self.registry.sync()
-
-
-def write_atomic(path: Path, content: bytes):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name("." + path.name + ".tmp")
-    with temporary.open("wb") as stream:
-        stream.write(content)
-        stream.flush()
-        import os
-
-        os.fsync(stream.fileno())
-    temporary.replace(path)

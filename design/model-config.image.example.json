@@ -7,8 +7,9 @@
   "type": "image",
   "architecture": "qwen_image_21",
   "reference": {"supported": false, "mime_types": [], "min_count": 0, "max_count": 0, "max_file_bytes": 0},
-  "lora": {"supported": true, "max_count": 1},
+  "lora": {"supported": true, "max_count": 8},
   "generation": {
+    "max_count": 8,
     "default_size": "1024x1024", "width_min": 512, "width_max": 2752,
     "height_min": 512, "height_max": 2752, "dimension_multiple": 32,
     "max_pixels": 4718592, "default_steps": 40, "steps_max": 100,

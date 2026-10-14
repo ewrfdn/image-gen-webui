@@ -175,6 +175,11 @@ def create_app(config=None, client=None):
         data = await file.read(20 * 1024 * 1024 + 1)
         return await platform.upload(identity["owner"], data)
 
+    @app.get("/api/assets/{asset_id}/content")
+    async def asset_content(asset_id: str, identity=Depends(authorize)):
+        blob = await platform.assets.get(identity["owner"], asset_id, identity["admin"])
+        return FileResponse(platform.path(blob.storage_key), media_type=blob.mime)
+
     @app.post("/api/tasks", status_code=202)
     async def submit(request: Request, identity=Depends(authorize)):
         task_id = await platform.submit(identity["owner"], await read_object(request))
@@ -267,6 +272,10 @@ def create_app(config=None, client=None):
             await db.commit()
         return values
 
+    @app.delete("/api/tasks/{task_id}", status_code=204)
+    async def delete_task(task_id: str, identity=Depends(authorize)):
+        await platform.delete_task(task_id, identity["owner"])
+
     @app.get("/api/tasks/{task_id}")
     async def task(task_id: str, identity=Depends(authorize)):
         return await platform.task_view(task_id, identity["owner"], identity["admin"])
@@ -334,15 +343,14 @@ def create_app(config=None, client=None):
                 task_id, identity["owner"], identity["admin"]
             )
             if result["status"] == "succeeded":
-                async with platform.db.sessions() as db:
-                    output = await db.get(MediaFile, result["files"][0]["id"])
-                data = await asyncio.to_thread(
-                    platform.path(output.storage_key).read_bytes
-                )
+                data = []
+                for file in result["files"]:
+                    content = await asyncio.to_thread(platform.path(file["storage_key"]).read_bytes)
+                    data.append({"b64_json": base64.b64encode(content).decode()})
                 return JSONResponse(
                     {
                         "created": int(result["completed_at"].timestamp()),
-                        "data": [{"b64_json": base64.b64encode(data).decode()}],
+                        "data": data,
                     },
                     headers=headers,
                 )

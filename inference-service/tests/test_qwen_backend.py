@@ -245,3 +245,24 @@ def test_qwen_rejects_partial_or_wrong_shape_lora(monkeypatch, tmp_path, bad_key
     assert "load" not in pipe.events
     assert pipe.events == ["reset", "reset"]
     assert pipe.calls == []
+
+
+@pytest.mark.parametrize("architecture", ["qwen", "sdxl"])
+def test_multiple_loras_apply_together_and_reset(tmp_path, monkeypatch, architecture):
+    from inference_service.backends.sdxl.backend import SDXLBackend
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=nullcontext, Generator=FakeGenerator))
+    pipe = FakePipe()
+    applied = []
+    original = pipe.set_adapters
+    def capture(names, adapter_weights):
+        applied.append((list(names), list(adapter_weights)))
+        original(names, adapter_weights)
+    pipe.set_adapters = capture
+    backend = QwenImage21Backend("cpu", "float32") if architecture == "qwen" else SDXLBackend("cpu", "float32")
+    backend.pipeline = pipe
+    loras = [Lora("style-a", "model", tmp_path / "a.safetensors", "a"), Lora("style-b", "model", tmp_path / "b.safetensors", "b")]
+    request = GenerationRequest(model="model", prompt="a", loras=[{"lora_id": "style-a", "scale": .5}, {"lora_id": "style-b", "scale": .8}])
+    result = backend.generate(request, loras, 1)
+    assert result.startswith(b"\x89PNG")
+    assert applied == [(["request_0", "request_1"], [.5, .8])]
+    assert pipe.active == [] and pipe.events[-1] == "reset"

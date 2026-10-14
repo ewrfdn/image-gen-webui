@@ -75,7 +75,7 @@ def configuration(checkpoint):
     ):
         raise ValueError("model_config_default_size_invalid")
     if (
-        c["lora"]["max_count"] not in (0, 1)
+        not 0 <= c["lora"]["max_count"] <= 8
         or bool(c["lora"]["max_count"]) != c["lora"]["supported"]
     ):
         raise ValueError("model_config_lora_invalid")
@@ -122,7 +122,7 @@ def catalogue(engine):
                     "model_id": checkpoint.model_id,
                     "revision": c["revision"],
                     "artifact_sha256": c["artifact_sha256"],
-                    "configuration": c,
+                    "configuration": {**c, "generation": {**c["generation"], "max_count": 8}},
                     "local_available": True,
                     "loras": loras,
                 }

@@ -115,3 +115,24 @@ CREATE INDEX ix_media_files_task ON media_files(task_id);
 -- ) UPDATE media_tasks AS t SET status = 'processing', updated_at = now(),
 --   lease_expires_at = now() + interval '30 seconds'
 -- FROM candidates AS c WHERE t.id = c.id RETURNING t.*;
+
+
+-- Content-addressed reference uploads: global byte deduplication, per-owner assets.
+CREATE TABLE blobs (
+  id uuid PRIMARY KEY,
+  sha256 varchar(64) NOT NULL UNIQUE,
+  storage_key text NOT NULL UNIQUE,
+  mime varchar(128) NOT NULL,
+  size bigint NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE assets (
+  id uuid PRIMARY KEY,
+  owner varchar(128) NOT NULL,
+  blob_id uuid NOT NULL REFERENCES blobs(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner, blob_id)
+);
+CREATE INDEX ix_assets_owner ON assets(owner);
+CREATE INDEX ix_assets_blob_id ON assets(blob_id);
+ALTER TABLE media_tasks ADD COLUMN raw_request jsonb;

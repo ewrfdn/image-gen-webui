@@ -118,3 +118,36 @@ Server 在目录同步、任务提交、节点选择和实际推理前检查模�
 创作台使用黑灰背景和紫色强调色；顶部仅保留紧凑导航，不再显示重复的标题介绍区。最近创作仅请求并展示 5 次任务；“查看全部作品”及侧栏“我的作品”打开 `/#gallery` 独立作品页。个人作品按原始图片比例排列成响应式瀑布流，按每批 24 条继续加载，可查看提示词、实际参数和下载原图。
 
 `GET /api/history` 仅返回当前身份所属、已完成并有产物的图片任务，支持 limit/offset 分页。管理员在个人作品库也只能看到自己的作品；所有用户的历史仍由管理后台的“生成记录”提供。作品库不会受最近任务列表 50 条旧上限限制。
+
+
+### 图像请求与参考素材
+
+作品详情使用全屏弹窗，桌面端左图右参数，显示正负提示词、LoRA、张数及生成参数。
+`POST /api/uploads` 接收图片并返回 `id`、`blob_id`、`uri: assets://<id>`。
+`blobs.sha256` 全局唯一；相同用户的同一 blob 复用 asset，不同用户保留各自的访问权限。
+数据库启动时自动新增表和 `media_tasks.raw_request` 列，旧任务回填原请求。
+
+```json
+{"model":"qwen-image-2.1","prompt":"森林中的木屋","negative_prompt":"水印，模糊","size":"1024x1024","n":3,"lora":["style-a","style-b"],"image":["assets://<asset-id>"],"watermark":false,"output_format":"png"}
+```
+
+`image` 支持单个字符串或数组，包含 asset URI、HTTP(S) URL 或 base64。
+`lora`（兼容 `loras`）支持字符串或数组，数组项可为 ID 或 `{lora_id, scale}`。
+实际参考图、LoRA 数量及张数均受模型能力约束；模型配置 `generation.max_count` 未声明时按 1 张处理。
+本地推理服务公布最多 8 张，逐张调用模型并使用连续 seed，统一返回 `data[].b64_json`。
+Qwen 的负向提示词需要 guidance > 1，UI 会在填写负向提示词时调整 guidance。
+本仓库的 Qwen/SDXL 后端仍为文生图；接入支持参考图的推理后端后，UI 才展示上传入口。
+URL/asset 读取、权限检查和 base64 转换都在平台 service 层完成，推理只接收 JSON。
+任务原请求存于 `raw_request`，实际补齐默认值的请求存于 `request_body`；输出文件按顺序保存，
+`raw_result` 保留 usage、trace 等返回字段，base64 内容以文件形式保存而不重复存入数据库。
+
+平台结构：`app.py` 为 HTTP controller；`generation.py` 负责验证与任务入队，
+`assets.py` 负责素材存储与转换，`service.py` 负责调度和结果持久化；
+`models.py` 为数据库实体，`db.py` 管理连接与迁移，`storage.py` 管理文件写入。
+
+
+作品详情以单张查看器展示任务结果，支持左右切换、位置指示和当前原图下载。
+瀑布流每个任务只显示首张结果，多张任务带数量角标。
+“相同参数创建”回填模型版本、尺寸、正负提示词、张数、seed、steps、guidance、各 LoRA 强度及参考图，跳转创作页面，不自动提交。
+`DELETE /api/tasks/{id}` 只允许所有者删除已结束或待调度任务，执行中和结果未知的任务返回 409。
+删除清理任务、执行记录、所有生成图片和任务参考图快照；共享的上传 assets/blobs 保留，以便其他任务复用。

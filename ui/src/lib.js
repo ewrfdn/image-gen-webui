@@ -23,19 +23,28 @@ export async function api(path, options) { return (await request(path, options))
 export const send = (path, method, body) => api(path, { method, body: JSON.stringify(body) });
 export function sizeChoices(g) {
   if (!g) return [];
+  const gcd = (a, b) => b ? gcd(b, a % b) : a;
+  const multiple = 16 * g.dimension_multiple / gcd(16, g.dimension_multiple);
   const ratios = [['1:1', 1, 1], ['3:4', 3, 4], ['4:3', 4, 3], ['9:16', 9, 16], ['16:9', 16, 9]];
   const [dw, dh] = g.default_size.split('x').map(Number);
   let defaultRatio = ratios.find(r => Math.abs(dw / dh - r[1] / r[2]) < .025);
   if (!defaultRatio) { defaultRatio = ['默认', dw, dh]; ratios.push(defaultRatio); }
-  const valid = (w, h) => w >= g.width_min && w <= g.width_max && h >= g.height_min && h <= g.height_max && w * h <= g.max_pixels && w % g.dimension_multiple === 0 && h % g.dimension_multiple === 0;
+  const valid = (w, h) => w >= g.width_min && w <= g.width_max && h >= g.height_min && h <= g.height_max && w * h <= g.max_pixels && w % multiple === 0 && h % multiple === 0;
   return ratios.map(([ratio, rw, rh]) => {
     const sizes = new Map();
     for (const edge of [512, 768, 1024, 1280, 1536, 2048, 2560, Math.max(dw, dh)]) {
-      const w = Math.round(edge * rw / Math.max(rw, rh) / g.dimension_multiple) * g.dimension_multiple;
-      const h = Math.round(edge * rh / Math.max(rw, rh) / g.dimension_multiple) * g.dimension_multiple;
+      const w = Math.round(edge * rw / Math.max(rw, rh) / multiple) * multiple;
+      const h = Math.round(edge * rh / Math.max(rw, rh) / multiple) * multiple;
       if (valid(w, h)) sizes.set(`${w}x${h}`, { value: `${w}x${h}`, label: `${w} × ${h}` });
     }
     if (ratio === defaultRatio[0] && valid(dw, dh)) sizes.set(g.default_size, { value: g.default_size, label: `${dw} × ${dh} · 模型默认` });
+    if (ratio === defaultRatio[0] && sizes.size) {
+      const preferred = [...sizes.values()].reduce((best, item) => {
+        const distance = value => { const [w, h] = value.split('x').map(Number); return (w - dw) ** 2 + (h - dh) ** 2; };
+        return distance(item.value) < distance(best.value) ? item : best;
+      });
+      preferred.isDefault = true;
+    }
     return { ratio, rw, rh, isDefault: ratio === defaultRatio[0], sizes: [...sizes.values()].sort((a, b) => a.value.split('x').reduce((x, y) => x * y, 1) - b.value.split('x').reduce((x, y) => x * y, 1)) };
   }).filter(r => r.sizes.length);
 }

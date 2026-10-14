@@ -74,8 +74,9 @@ def build(root):
                     "max_count": 0,
                     "max_file_bytes": 0,
                 },
-                "lora": {"supported": True, "max_count": 1},
+                "lora": {"supported": True, "max_count": 8},
                 "generation": {
+                    "max_count": 8,
                     "default_size": "1024x1024",
                     "width_min": caps.min_size,
                     "width_max": caps.max_size,

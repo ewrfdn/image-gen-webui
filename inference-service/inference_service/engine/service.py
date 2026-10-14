@@ -243,10 +243,12 @@ class Engine:
         seed = request.seed if request.seed is not None else secrets.randbelow(2**32)
         start = time.perf_counter()
         try:
-            lora = None
+            if request.image:
+                raise UnsupportedParameter("This text-to-image backend does not support references")
+            loras = []
             lora_info = []
-            if request.loras:
-                lora = self.registry.lora(request.model, request.loras[0].lora_id)
+            for selection in request.loras:
+                lora = self.registry.lora(request.model, selection.lora_id)
                 if lora is None:
                     raise ServiceError(404, "lora_not_found", "LoRA not found")
                 hasher = hashlib.sha256()
@@ -258,14 +260,19 @@ class Engine:
                     raise ServiceError(409, "resource_changed", "Requested LoRA version is not available")
                 if self.registry.lora(request.model, lora.lora_id) != lora:
                     raise ServiceError(409, "resource_changed", "LoRA file changed")
-                lora_info = [{"lora_id": lora.lora_id, "scale": request.loras[0].scale,
-                              "sha256": hasher.hexdigest()}]
-            png = backend.generate(request, lora, seed)
-            if not png.startswith(b"\x89PNG\r\n\x1a\n"):
-                raise RuntimeError("backend did not produce PNG")
-            if lora and self.registry.lora(request.model, lora.lora_id) != lora:
-                raise ServiceError(409, "resource_changed", "LoRA file changed during generation")
-            return {"created": int(time.time()), "data": [{"b64_json": base64.b64encode(png).decode("ascii")}],
+                loras.append(lora)
+                lora_info.append({"lora_id": lora.lora_id, "scale": selection.scale, "sha256": hasher.hexdigest()})
+            data = []
+            for index in range(request.n):
+                single = request.model_copy(update={"n": 1})
+                png = backend.generate(single, loras if len(loras) > 1 else (loras[0] if loras else None), (seed + index) % 2**32)
+                if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+                    raise RuntimeError("backend did not produce PNG")
+                data.append({"b64_json": base64.b64encode(png).decode("ascii")})
+            for lora in loras:
+                if self.registry.lora(request.model, lora.lora_id) != lora:
+                    raise ServiceError(409, "resource_changed", "LoRA file changed during generation")
+            return {"created": int(time.time()), "data": data,
                     "metadata": {"model_revision": revision, "seed": seed,
                                  "loras": lora_info, "inference_ms": int((time.perf_counter() - start) * 1000)}}
         except CleanupFailed as exc:
