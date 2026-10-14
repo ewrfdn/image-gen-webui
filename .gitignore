@@ -6,4 +6,16 @@ __pycache__/
 *.log
 *.exit
 .env
+.env.*
+!.env.example
+compose.resources.json
+compose.resources.yaml
+verification-output/
 *.png
+platform-data/
+server/data/
+models/
+ui/node_modules/
+ui/dist/
+*.safetensors
+*.ckpt

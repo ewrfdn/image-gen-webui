@@ -398,6 +398,37 @@
         }
       }
     },
+    "/internal/v1/catalog": {
+      "get": {
+        "summary": "Catalog",
+        "operationId": "catalog_internal_v1_catalog_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid service token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ]
+      }
+    },
     "/internal/v1/models/{model_id}/load": {
       "post": {
         "summary": "Load",
@@ -790,6 +821,17 @@
             "type": "string",
             "title": "Model Revision"
           },
+          "model_artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Artifact Sha256"
+          },
           "seed": {
             "type": "integer",
             "title": "Seed"
@@ -824,6 +866,38 @@
             "minLength": 1,
             "title": "Model"
           },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
+          },
+          "expected_artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Artifact Sha256"
+          },
+          "expected_lora_sha256": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Expected Lora Sha256"
+          },
           "prompt": {
             "type": "string",
             "maxLength": 4000,
@@ -837,9 +911,18 @@
           },
           "n": {
             "type": "integer",
-            "const": 1,
+            "maximum": 8.0,
+            "minimum": 1.0,
             "title": "N",
             "default": 1
+          },
+          "image": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "Image"
           },
           "response_format": {
             "type": "string",
@@ -903,7 +986,7 @@
               "$ref": "#/components/schemas/LoraSelection"
             },
             "type": "array",
-            "maxItems": 1,
+            "maxItems": 8,
             "title": "Loras"
           }
         },

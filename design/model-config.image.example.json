@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "model_id": "qwen-image-2.1",
+  "display_name": "Qwen Image 2.1",
+  "revision": "example-r1",
+  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "type": "image",
+  "architecture": "qwen_image_21",
+  "reference": {"supported": true, "mime_types": ["image/png", "image/jpeg", "image/webp"], "min_count": 0, "max_count": 10, "max_file_bytes": 20971520},
+  "lora": {"supported": true, "max_count": 8},
+  "generation": {
+    "max_count": 8,
+    "default_size": "1024x1024", "width_min": 512, "width_max": 2752,
+    "height_min": 512, "height_max": 2752, "dimension_multiple": 32,
+    "max_pixels": 4718592, "default_steps": 40, "steps_max": 100,
+    "default_guidance_scale": 1, "output_mime_types": ["image/png"], "timeout_seconds": 900
+  }
+}

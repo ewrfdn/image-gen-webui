@@ -9,7 +9,7 @@ from .sdxl.backend import SDXLBackend
 
 CAPABILITIES = {
     "sdxl": BackendCapabilities("sdxl", 512, 1024, 64, 1_048_576, 25, 7.0),
-    "qwen_image_21": BackendCapabilities("qwen_image_21", 512, 2752, 32, 4_718_592, 40, 1.0),
+    "qwen_image_21": BackendCapabilities("qwen_image_21", 512, 2752, 32, 4_718_592, 40, 1.0, reference_max_count=10),
 }
 
 

@@ -1,12 +1,40 @@
 """Local text-to-image inference for the Qwen-Image 2.1 Diffusers pipeline."""
 
 import gc
+import base64
 import io
 from typing import Any
 
 from ...resources import Checkpoint, Lora
 from ...schemas import GenerationRequest
 from ..base import CleanupFailed, LoraIncompatible, UnsupportedParameter
+
+
+def validated_lora_state(pipe, lora: Lora) -> dict:
+    state = pipe.lora_state_dict(str(lora.path.parent), weight_name=lora.path.name,
+                                 use_safetensors=True, local_files_only=True)
+    pairs = {}
+    for key, tensor in state.items():
+        if not key.startswith("transformer."):
+            raise ValueError(f"Unsupported LoRA component: {key}")
+        name = key.removeprefix("transformer.")
+        kind = next((kind for kind in ("A", "B") if name.endswith(f".lora_{kind}.weight")), None)
+        if kind is None or len(tensor.shape) != 2:
+            raise ValueError(f"Unsupported LoRA tensor: {key}")
+        module_name = name.removesuffix(f".lora_{kind}.weight")
+        module = pipe.transformer.get_submodule(module_name)
+        if not hasattr(module, "weight") or len(module.weight.shape) != 2:
+            raise ValueError(f"Unsupported LoRA module: {module_name}")
+        pairs.setdefault(module_name, {})[kind] = tensor
+    if not pairs:
+        raise ValueError("LoRA contains no transformer adapters")
+    for name, pair in pairs.items():
+        if set(pair) != {"A", "B"}:
+            raise ValueError(f"Incomplete LoRA pair: {name}")
+        out_features, in_features = pipe.transformer.get_submodule(name).weight.shape
+        if pair["A"].shape[1] != in_features or pair["B"].shape[0] != out_features or pair["A"].shape[0] != pair["B"].shape[1]:
+            raise ValueError(f"Incompatible LoRA dimensions: {name}")
+    return state
 
 
 class QwenImage21Backend:
@@ -38,12 +66,25 @@ class QwenImage21Backend:
                           num_inference_steps=1, true_cfg_scale=1.0,
                           generator=torch.Generator(device=self.device).manual_seed(0))
 
-    def generate(self, request: GenerationRequest, lora: Lora | None, seed: int) -> bytes:
+    def generate(self, request: GenerationRequest, lora: Lora | list[Lora] | None, seed: int) -> bytes:
         import torch
 
         pipe = self.pipeline
         if pipe is None:
             raise RuntimeError("pipeline is not loaded")
+        references = []
+        try:
+            from PIL import Image
+            for encoded in request.image:
+                data = base64.b64decode(encoded, validate=True)
+                if len(data) > 20 * 1024 * 1024:
+                    raise ValueError("Reference exceeds 20 MB")
+                with Image.open(io.BytesIO(data)) as image:
+                    if image.format not in ("PNG", "JPEG", "WEBP"):
+                        raise ValueError("Unsupported reference format")
+                    references.append(image.convert("RGBA"))
+        except Exception as exc:
+            raise UnsupportedParameter("Reference must be a valid PNG, JPEG or WebP, at most 20 MB") from exc
         guidance = request.guidance_scale if request.guidance_scale is not None else 1.0
         if request.negative_prompt and guidance <= 1:
             raise UnsupportedParameter("negative_prompt requires guidance_scale > 1 for Qwen-Image 2.1")
@@ -63,16 +104,21 @@ class QwenImage21Backend:
             if lora:
                 adapter_attempted = True
                 try:
-                    pipe.load_lora_weights(str(lora.path.parent), weight_name=lora.path.name,
-                                           adapter_name="request")
-                    pipe.set_adapters(["request"], adapter_weights=[request.loras[0].scale])
-                    if not hasattr(pipe, "get_active_adapters") or "request" not in pipe.get_active_adapters():
+                    selected = lora if isinstance(lora, list) else [lora]
+                    names = []
+                    for index, item in enumerate(selected):
+                        name = "request" if len(selected) == 1 else f"request_{index}"
+                        state = validated_lora_state(pipe, item)
+                        pipe.load_lora_weights(state, adapter_name=name)
+                        names.append(name)
+                    pipe.set_adapters(names, adapter_weights=[v.scale for v in request.loras])
+                    if not hasattr(pipe, "get_active_adapters") or not set(names).issubset(pipe.get_active_adapters()):
                         raise RuntimeError("LoRA adapter was not activated")
                 except Exception as exc:
                     raise LoraIncompatible("LoRA weights could not be applied") from exc
             width, height = (int(part) for part in request.size.split("x"))
             with torch.inference_mode():
-                image = pipe(prompt=request.prompt,
+                image = pipe(**({"image": references} if references else {}), prompt=request.prompt,
                              negative_prompt=(request.negative_prompt or "") if guidance > 1 else None,
                              true_cfg_scale=guidance,
                              width=width, height=height,

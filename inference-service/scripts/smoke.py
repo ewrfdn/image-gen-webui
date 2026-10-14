@@ -4,6 +4,7 @@ import argparse
 import base64
 import json
 import os
+from pathlib import Path
 import urllib.error
 import urllib.request
 
@@ -31,6 +32,8 @@ def main() -> None:
     parser.add_argument("--size", default="512x512")
     parser.add_argument("--steps", type=int, default=4)
     parser.add_argument("--prompt", default="a small cabin in a snowy forest")
+    parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--output", type=Path, help="Save the returned PNG for visual inspection")
     args = parser.parse_args()
     base = os.environ.get("INFERENCE_BASE_URL", "http://127.0.0.1:8000")
     admin = os.environ["ADMIN_TOKEN"]
@@ -38,13 +41,18 @@ def main() -> None:
     print("health:", call(base, "/health/ready"))
     print("load:", call(base, f"/internal/v1/models/{args.model}/load", admin, {}))
     payload = {"model": args.model, "prompt": args.prompt, "size": args.size,
-               "n": 1, "response_format": "b64_json", "num_inference_steps": args.steps}
+               "n": 1, "response_format": "b64_json", "num_inference_steps": args.steps,
+               "seed": args.seed}
     if args.lora_id:
         payload["loras"] = [{"lora_id": args.lora_id, "scale": 0.8}]
     result = call(base, "/v1/images/generations", infer, payload)
     png = base64.b64decode(result["data"][0]["b64_json"], validate=True)
     if not png.startswith(b"\x89PNG\r\n\x1a\n"):
         raise RuntimeError("Generation did not return PNG")
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_bytes(png)
+        print("output:", str(args.output))
     print("png_bytes:", len(png))
     print("metadata:", json.dumps(result["metadata"], ensure_ascii=False))
 

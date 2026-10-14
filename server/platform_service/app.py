@@ -1,0 +1,650 @@
+import asyncio
+import base64
+import hashlib
+import secrets
+from contextlib import asynccontextmanager
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from fastapi import Depends, FastAPI, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func, select
+
+from .accounts import Accounts
+from .config import Config
+from .db import ApiKey, MediaFile, ModelDefault, Node, Setting, Task, User
+from .cluster import valid_size
+from .service import WAITING, ApiError, Platform
+
+
+class BackendInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=128)
+    base_url: str
+    inference_token: str = ""
+    admin_token: str = ""
+    enabled: bool = True
+
+
+class SettingsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_count: int = Field(ge=1, le=100000)
+    refresh_seconds: int = Field(ge=1, le=3600)
+    stale_seconds: int = Field(ge=1, le=86400)
+    idle_release_seconds: int = Field(default=3600, ge=60, le=604800)
+
+
+class ModelDefaultInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_id: str = Field(min_length=1, max_length=128)
+    revision: str = Field(min_length=1, max_length=128)
+    default_size: str
+    default_steps: int = Field(ge=1, strict=True)
+    default_guidance_scale: float = Field(ge=0, le=20, allow_inf_nan=False)
+    default_seed: int | None = Field(default=None, ge=0, le=2**32 - 1, strict=True)
+
+
+def create_app(config=None, client=None):
+    platform = Platform(config or Config.from_env(), client)
+    accounts = Accounts(platform)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        await platform.db.initialize()
+        await accounts.initialize()
+        await platform.start()
+        yield
+        await platform.close()
+
+    app = FastAPI(title="Frame inference platform", version="0.1.0", lifespan=lifespan)
+    app.state.platform = platform
+    app.state.accounts = accounts
+
+    async def read_object(request):
+        try:
+            value = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            raise ApiError(400, "invalid_json", "Request body must be valid JSON")
+        if not isinstance(value, dict):
+            raise ApiError(400, "invalid_json", "Request body must be a JSON object")
+        return value
+
+    @app.exception_handler(ApiError)
+    async def api_error(request, exc):
+        if request.url.path.rstrip("/") == "/admin":
+            if exc.status == 401:
+                return RedirectResponse("/?next=/admin", status_code=303)
+            if exc.status == 403:
+                return HTMLResponse(
+                    '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>无权访问后台</title><body><h1>无权访问后台</h1><p>仅管理员和超级管理员可以进入管理后台。</p><a href="/">返回推理平台</a></body></html>',
+                    status_code=403,
+                )
+        return JSONResponse(
+            {"error": {"code": exc.code, "message": exc.message}},
+            status_code=exc.status,
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request, exc):
+        return JSONResponse(
+            {
+                "error": {
+                    "code": "invalid_request",
+                    "message": "Request parameters are invalid",
+                }
+            },
+            status_code=400,
+        )
+
+    async def authorize(request: Request):
+        identity = await accounts.authorize(request)
+        if request.url.path.startswith("/v1/") and identity["role"] == "user":
+            raise ApiError(
+                403,
+                "api_not_allowed",
+                "Ordinary users can generate only through the platform",
+            )
+        return identity
+
+    accounts.install(app)
+
+    async def admin(identity=Depends(authorize)):
+        if not identity["admin"]:
+            raise ApiError(403, "forbidden", "Administrator permission is required")
+        return identity
+
+    @app.get("/health/live")
+    async def live():
+        return {"status": "live"}
+
+    @app.get("/health/ready")
+    async def ready():
+        if not platform.ready:
+            raise ApiError(503, "initializing", "Platform is initializing")
+        return {"status": "ready"}
+
+    @app.get("/api/session")
+    async def session(identity=Depends(authorize)):
+        return {
+            k: identity.get(k) for k in ("admin", "role", "username", "user_id", "kind")
+        }
+
+    @app.get("/api/models")
+    async def models(identity=Depends(authorize)):
+        async with platform.db.sessions() as db:
+            count = await db.scalar(
+                select(func.count()).select_from(Task).where(Task.status.in_(WAITING))
+            )
+        return {
+            "models": await platform.models_with_defaults(),
+            "queue_count": count,
+            "max_count": platform.settings["max_count"],
+        }
+
+    @app.get("/v1/models")
+    async def compatible_models(identity=Depends(authorize)):
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "id": m["model_id"],
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "local",
+                }
+                for m in platform.registry.models()
+                if m["status"] != "unavailable"
+            ],
+        }
+
+    @app.get("/api/cluster/availability")
+    async def availability(
+        model_id: str,
+        lora_id: str | None = None,
+        revision: str | None = None,
+        identity=Depends(authorize),
+    ):
+        return await platform.registry.availability(
+            model_id, revision, [{"lora_id": lora_id}] if lora_id else []
+        )
+
+    @app.post("/api/uploads", status_code=201)
+    async def upload(file: UploadFile, identity=Depends(authorize)):
+        data = await file.read(20 * 1024 * 1024 + 1)
+        return await platform.upload(identity["owner"], data)
+
+    @app.get("/api/assets/{asset_id}/content")
+    async def asset_content(asset_id: str, identity=Depends(authorize)):
+        blob = await platform.assets.get(identity["owner"], asset_id, identity["admin"])
+        return FileResponse(platform.path(blob.storage_key), media_type=blob.mime)
+
+    @app.post("/api/tasks", status_code=202)
+    async def submit(request: Request, identity=Depends(authorize)):
+        task_id = await platform.submit(identity["owner"], await read_object(request))
+        return {"id": task_id, "status": "pending"}
+
+    @app.get("/api/tasks")
+    async def tasks(mine: bool = False, limit: int = Query(default=50, ge=1, le=100), identity=Depends(authorize)):
+        async with platform.db.sessions() as db:
+            query = select(Task).order_by(Task.created_at.desc(), Task.id.desc()).limit(limit)
+            if mine or not identity["admin"]:
+                query = query.where(Task.owner == identity["owner"])
+            ids = (await db.scalars(query)).all()
+        return {
+            "tasks": [
+                await platform.task_view(t.id, identity["owner"], identity["admin"])
+                for t in ids
+            ]
+        }
+
+    @app.get("/api/admin/history", dependencies=[Depends(admin)])
+    async def admin_history(q: str = Query(default="", max_length=128),
+                            user_id: str = Query(default="", max_length=36),
+                            status: str = "", limit: int = Query(default=24, ge=1, le=100),
+                            offset: int = Query(default=0, ge=0), identity=Depends(admin)):
+        q = q.strip()
+        async with platform.db.sessions() as db:
+            users = {"user:" + u.id: u.username for u in (await db.scalars(select(User))).all()}
+            keys = {"key:" + k.id: users.get("user:" + (k.user_id or ""), "未知账号") + " / " + k.name
+                    for k in (await db.scalars(select(ApiKey))).all()}
+            owners = users | keys
+            query = select(Task)
+            if user_id:
+                user_keys = (await db.scalars(select(ApiKey.id).where(ApiKey.user_id == user_id))).all()
+                query = query.where(Task.owner.in_(["user:" + user_id, *["key:" + k for k in user_keys]]))
+            elif q:
+                matching = [owner for owner, name in owners.items() if q.casefold() in name.casefold()]
+                query = query.where(Task.owner.in_(matching))
+            if status:
+                query = query.where(Task.status == status)
+            total = await db.scalar(select(func.count()).select_from(query.subquery()))
+            tasks = (await db.scalars(query.order_by(Task.created_at.desc()).limit(limit).offset(offset))).all()
+        records = []
+        for t in tasks:
+            record = await platform.task_view(t.id, identity["owner"], True)
+            record["username"] = owners.get(t.owner, t.owner)
+            records.append(record)
+        return {"tasks": records, "total": total, "limit": limit, "offset": offset}
+
+    @app.get("/api/history")
+    async def personal_history(
+        limit: int = Query(default=24, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        identity=Depends(authorize),
+    ):
+        # Personal galleries stay owner-scoped even for administrators.
+        async with platform.db.sessions() as db:
+            query = select(Task).where(
+                Task.owner == identity["owner"],
+                Task.type == "image",
+                Task.status == "succeeded",
+                select(MediaFile.id).where(
+                    MediaFile.task_id == Task.id, MediaFile.role == "output"
+                ).exists(),
+            )
+            total = await db.scalar(select(func.count()).select_from(query.subquery()))
+            records = (await db.scalars(
+                query.order_by(Task.created_at.desc(), Task.id.desc()).limit(limit).offset(offset)
+            )).all()
+        return {
+            "tasks": [await platform.task_view(t.id, identity["owner"]) for t in records],
+            "total": total, "limit": limit, "offset": offset,
+        }
+
+    @app.put("/api/admin/model-defaults", dependencies=[Depends(admin)])
+    async def model_defaults(payload: ModelDefaultInput):
+        model = next((m for m in platform.registry.models()
+                      if m["model_id"] == payload.model_id and m["revision"] == payload.revision), None)
+        if model is None:
+            raise ApiError(404, "model_not_found", "Model revision is not in the catalogue")
+        generation = model["configuration"]["generation"]
+        if not valid_size(payload.default_size, generation) or payload.default_steps > generation["steps_max"]:
+            raise ApiError(400, "invalid_defaults", "Defaults are outside model limits")
+        values = payload.model_dump(exclude={"model_id", "revision"})
+        async with platform.admission_lock, platform.db.sessions() as db:
+            record = await db.get(ModelDefault, (payload.model_id, payload.revision))
+            if record is None:
+                db.add(ModelDefault(model_id=payload.model_id, revision=payload.revision, generation=values))
+            else:
+                record.generation = values
+            await db.commit()
+        return values
+
+    @app.delete("/api/tasks/{task_id}", status_code=204)
+    async def delete_task(task_id: str, identity=Depends(authorize)):
+        await platform.delete_task(task_id, identity["owner"])
+
+    @app.get("/api/tasks/{task_id}")
+    async def task(task_id: str, identity=Depends(authorize)):
+        return await platform.task_view(task_id, identity["owner"], identity["admin"])
+
+    @app.post("/api/admin/tasks/{task_id}/retry", dependencies=[Depends(admin)])
+    async def retry(task_id: str):
+        async with platform.admission_lock, platform.db.sessions() as db:
+            setting = await db.scalar(
+                select(Setting).where(Setting.id == 1).with_for_update()
+            )
+            count = await db.scalar(
+                select(func.count()).select_from(Task).where(Task.status.in_(WAITING))
+            )
+            row = await db.get(Task, task_id)
+            if row is None or row.status not in ("unknown", "failed"):
+                raise ApiError(
+                    409,
+                    "cannot_retry",
+                    "Only failed or unknown tasks can be explicitly retried",
+                )
+            if count >= setting.max_count:
+                raise ApiError(429, "queue_full", "Waiting queue is full")
+            row.status, row.error, row.wait_reason = "pending", None, "explicit_retry"
+            await db.commit()
+        await platform.registry.sync()
+        return {
+            "id": task_id,
+            "status": "pending",
+            "warning": "Explicit retry can duplicate an unknown execution",
+        }
+
+    @app.get("/api/files/{file_id}/content")
+    async def content(file_id: str, identity=Depends(authorize)):
+        async with platform.db.sessions() as db:
+            row = await db.get(MediaFile, file_id)
+            if row is None or (
+                not identity["admin"] and row.owner != identity["owner"]
+            ):
+                raise ApiError(404, "file_not_found", "File not found")
+        path = platform.path(row.storage_key)
+        if not path.is_file():
+            raise ApiError(404, "file_not_found", "File not found")
+        return FileResponse(path, media_type=row.mime, filename=path.name)
+
+    async def images(request, payload, identity):
+        # Images endpoints never accept video tasks.
+        match = [
+            m
+            for m in platform.registry.models()
+            if m["model_id"] == payload.get("model")
+        ]
+        if match and any(m["configuration"]["type"] != "image" for m in match):
+            raise ApiError(
+                400, "wrong_model_type", "Images API requires an image model"
+            )
+        task_id = await platform.submit(identity["owner"], payload, source="api")
+        headers = {"X-Task-ID": task_id, "Location": "/api/tasks/" + task_id}
+        if "respond-async" in request.headers.get("prefer", ""):
+            return JSONResponse(
+                {"id": task_id, "status": "pending"}, status_code=202, headers=headers
+            )
+        deadline = asyncio.get_running_loop().time() + platform.config.http_wait_seconds
+        while asyncio.get_running_loop().time() < deadline:
+            result = await platform.task_view(
+                task_id, identity["owner"], identity["admin"]
+            )
+            if result["status"] == "succeeded":
+                data = []
+                for file in result["files"]:
+                    content = await asyncio.to_thread(platform.path(file["storage_key"]).read_bytes)
+                    data.append({"b64_json": base64.b64encode(content).decode()})
+                return JSONResponse(
+                    {
+                        "created": int(result["completed_at"].timestamp()),
+                        "data": data,
+                    },
+                    headers=headers,
+                )
+            if result["status"] in ("failed", "unknown"):
+                return JSONResponse(
+                    {
+                        "error": {
+                            "code": "generation_" + result["status"],
+                            "message": result["error"],
+                        },
+                        "task_id": task_id,
+                    },
+                    status_code=502,
+                    headers=headers,
+                )
+            await asyncio.sleep(0.25)
+        return JSONResponse(
+            {
+                "error": {
+                    "code": "task_wait_timeout",
+                    "message": "Task remains active; query its ID",
+                },
+                "task_id": task_id,
+            },
+            status_code=504,
+            headers=headers,
+        )
+
+    @app.post("/v1/images/generations")
+    async def generate(request: Request, identity=Depends(authorize)):
+        return await images(request, await read_object(request), identity)
+
+    @app.post("/v1/images/edits")
+    async def edits(request: Request, identity=Depends(authorize)):
+        import json
+
+        form = await request.form(
+            max_files=16, max_fields=32, max_part_size=20 * 1024 * 1024
+        )
+        payload = {}
+        refs = []
+        for name, value in form.multi_items():
+            if hasattr(value, "read"):
+                if name not in ("image", "image[]"):
+                    raise ApiError(
+                        400,
+                        "unsupported_parameter",
+                        "Only image/image[] reference files are supported",
+                    )
+                file = await platform.upload(
+                    identity["owner"], await value.read(20 * 1024 * 1024 + 1)
+                )
+                refs.append(file["id"])
+            elif name == "loras":
+                try:
+                    payload[name] = json.loads(value)
+                except ValueError:
+                    raise ApiError(400, "invalid_lora", "LoRA field must be valid JSON")
+            elif name in ("n", "seed", "num_inference_steps"):
+                try:
+                    payload[name] = int(value)
+                except ValueError:
+                    raise ApiError(
+                        400, "invalid_parameter", "Invalid integer parameter"
+                    )
+            elif name == "guidance_scale":
+                try:
+                    payload[name] = float(value)
+                except ValueError:
+                    raise ApiError(400, "invalid_parameter", "Invalid guidance scale")
+            else:
+                payload[name] = str(value)
+        if not refs:
+            raise ApiError(
+                400, "missing_reference", "At least one reference image is required"
+            )
+        payload["references"] = refs
+        return await images(request, payload, identity)
+
+    @app.get("/api/admin/backends", dependencies=[Depends(admin)])
+    async def backends():
+        async with platform.db.sessions() as db:
+            rows = (await db.scalars(select(Node))).all()
+        fresh = platform.registry.fresh()
+        return {
+            "nodes": [
+                {
+                    "id": n.id,
+                    "name": n.name,
+                    "base_url": n.base_url,
+                    "enabled": n.enabled,
+                    "connected": n.id in fresh,
+                    "error": platform.registry.errors.get(n.id),
+                    "models": fresh.get(n.id, {}).get("models", []),
+                    "runtime": fresh.get(n.id, {}).get("runtime", {}),
+                    "resources": fresh.get(n.id, {}).get("resources"),
+                    "catalog_errors": fresh.get(n.id, {}).get("errors", []),
+                    "quarantined": n.id in platform.registry.quarantined,
+                }
+                for n in rows
+            ]
+        }
+
+    async def save_backend(payload, node_id=None):
+        url = urlsplit(payload.base_url)
+        if (
+            url.scheme not in ("http", "https")
+            or not url.hostname
+            or url.username
+            or url.password
+            or url.query
+            or url.fragment
+        ):
+            raise ApiError(
+                400,
+                "invalid_backend_url",
+                "A plain HTTP(S) backend address is required",
+            )
+        async with platform.db.sessions() as db:
+            node = await db.get(Node, node_id) if node_id else None
+            if node_id and node is None:
+                raise ApiError(404, "node_not_found", "Backend not found")
+            address = payload.base_url.rstrip("/")
+            duplicate = await db.scalar(select(Node).where(Node.base_url == address))
+            if duplicate and duplicate.id != node_id:
+                raise ApiError(
+                    409, "duplicate_backend", "Backend address is already configured"
+                )
+            if node is None:
+                if not payload.inference_token or not payload.admin_token:
+                    raise ApiError(
+                        400, "missing_credentials", "Both backend tokens are required"
+                    )
+                node = Node(
+                    name=payload.name,
+                    base_url=address,
+                    inference_secret=platform.registry.encrypt(payload.inference_token),
+                    admin_secret=platform.registry.encrypt(payload.admin_token),
+                )
+                db.add(node)
+            node.name, node.base_url, node.enabled = (
+                payload.name,
+                address,
+                payload.enabled,
+            )
+            if payload.inference_token:
+                node.inference_secret = platform.registry.encrypt(
+                    payload.inference_token
+                )
+            if payload.admin_token:
+                node.admin_secret = platform.registry.encrypt(payload.admin_token)
+            await db.commit()
+        await platform.registry.sync()
+        return {"id": node.id, "connected": node.id in platform.registry.fresh()}
+
+    @app.post("/api/admin/backends", dependencies=[Depends(admin)])
+    async def add_backend(payload: BackendInput):
+        return await save_backend(payload)
+
+    @app.put("/api/admin/backends/{node_id}", dependencies=[Depends(admin)])
+    async def edit_backend(node_id: str, payload: BackendInput):
+        return await save_backend(payload, node_id)
+
+    @app.post("/api/admin/backends/sync", dependencies=[Depends(admin)])
+    async def sync_backends():
+        await platform.registry.sync()
+        return {"status": "synced"}
+
+    @app.post(
+        "/api/admin/nodes/{node_id}/models/{model_id}/load",
+        dependencies=[Depends(admin)],
+        status_code=202,
+    )
+    async def admin_load_model(node_id: str, model_id: str):
+        return await platform.load_model(node_id, model_id)
+
+    @app.post(
+        "/api/admin/nodes/{node_id}/models/{model_id}/unload",
+        dependencies=[Depends(admin)],
+        status_code=202,
+    )
+    async def admin_unload_model(node_id: str, model_id: str):
+        return await platform.unload_model(node_id, model_id)
+
+    @app.get("/api/admin/settings", dependencies=[Depends(admin)])
+    async def get_settings():
+        return platform.settings | {"query_timeout_seconds": 1}
+
+    @app.put("/api/admin/settings", dependencies=[Depends(admin)])
+    async def settings(payload: SettingsInput):
+        if payload.stale_seconds < payload.refresh_seconds:
+            raise ApiError(
+                400,
+                "invalid_settings",
+                "Node TTL cannot be shorter than the refresh interval",
+            )
+        async with platform.admission_lock, platform.db.sessions() as db:
+            row = await db.scalar(
+                select(Setting).where(Setting.id == 1).with_for_update()
+            )
+            for k, v in payload.model_dump().items():
+                setattr(row, k, v)
+            await db.commit()
+            platform.settings = payload.model_dump()
+        return platform.settings
+
+    @app.get("/api/admin/keys", dependencies=[Depends(admin)])
+    async def keys(identity=Depends(admin)):
+        async with platform.db.sessions() as db:
+            rows = (
+                await db.scalars(
+                    select(ApiKey)
+                    .where(
+                        True
+                        if identity["role"] == "super_admin"
+                        else ApiKey.user_id == identity["user_id"]
+                    )
+                    .order_by(ApiKey.created_at.desc())
+                )
+            ).all()
+        return {
+            "keys": [
+                {
+                    k: getattr(row, k)
+                    for k in (
+                        "id",
+                        "name",
+                        "prefix",
+                        "enabled",
+                        "revoked",
+                        "created_at",
+                        "last_used_at",
+                    )
+                }
+                for row in rows
+            ]
+        }
+
+    @app.post("/api/admin/keys", dependencies=[Depends(admin)])
+    async def create_key(request: Request, identity=Depends(admin)):
+        body = await read_object(request)
+        name = body.get("name")
+        if not isinstance(name, str) or not 1 <= len(name) <= 128:
+            raise ApiError(400, "invalid_name", "Key name is required")
+        token = "sk-frame-" + secrets.token_urlsafe(32)
+        async with platform.db.sessions() as db:
+            key = ApiKey(
+                name=name,
+                user_id=identity["user_id"],
+                prefix=token[:16],
+                key_hash=hashlib.sha256(token.encode()).hexdigest(),
+            )
+            db.add(key)
+            await db.commit()
+        return {"id": key.id, "key": token, "prefix": key.prefix}
+
+    @app.patch("/api/admin/keys/{key_id}", dependencies=[Depends(admin)])
+    async def change_key(key_id: str, request: Request, identity=Depends(admin)):
+        body = await read_object(request)
+        if set(body) - {"enabled", "revoked"} or any(
+            not isinstance(v, bool) for v in body.values()
+        ):
+            raise ApiError(
+                400,
+                "invalid_key_update",
+                "Only boolean enabled/revoked fields are accepted",
+            )
+        async with platform.db.sessions() as db:
+            key = await db.get(ApiKey, key_id)
+            if key is None or (
+                identity["role"] != "super_admin" and key.user_id != identity["user_id"]
+            ):
+                raise ApiError(404, "key_not_found", "Key not found")
+            if key.revoked:
+                raise ApiError(409, "key_revoked", "Revoked keys cannot be restored")
+            for k, v in body.items():
+                setattr(key, k, v)
+            if key.revoked:
+                key.enabled = False
+            await db.commit()
+        return {"status": "updated"}
+
+    static = Path(__file__).resolve().parents[2] / "ui" / "dist"
+
+    @app.get("/admin", include_in_schema=False)
+    @app.get("/admin/", include_in_schema=False)
+    async def admin_page(identity=Depends(admin)):
+        return FileResponse(
+            static / "index.html",
+            media_type="text/html",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    # API-only checks can initialize before the frontend build is present.
+    app.mount("/", StaticFiles(directory=static, html=True, check_dir=False), name="ui")
+    return app

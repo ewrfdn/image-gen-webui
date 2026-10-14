@@ -53,28 +53,40 @@ class Engine:
     def release(self) -> None:
         self.operation_lock.release()
 
-    async def load(self, model_id: str) -> dict:
+    async def execute(self, operation, *args) -> dict:
+        # Cancelling the HTTP coroutine cannot stop a CUDA worker thread. The
+        # worker owns the slot until completion, including cleanup and errors.
         self.acquire()
+
+        def worker():
+            try:
+                return operation(*args)
+            finally:
+                self.release()
+
         try:
-            return await asyncio.to_thread(self.load_locked, model_id)
-        finally:
+            future = asyncio.get_running_loop().run_in_executor(None, worker)
+        except BaseException:
             self.release()
+            raise
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            # Retrieve a late exception when the disconnected caller no longer
+            # awaits the result. Backend errors are logged by the operation.
+            future.add_done_callback(lambda completed: completed.exception() if not completed.cancelled() else None)
+            raise
+
+    async def load(self, model_id: str) -> dict:
+        return await self.execute(self.load_locked, model_id)
 
     async def unload(self, model_id: str) -> dict:
         if self.active_requests and self.model_id == model_id:
             raise ServiceError(409, "model_in_use", "Model is in use")
-        self.acquire()
-        try:
-            return await asyncio.to_thread(self.unload_locked, model_id)
-        finally:
-            self.release()
+        return await self.execute(self.unload_locked, model_id)
 
     async def generate(self, request: GenerationRequest) -> dict:
-        self.acquire()
-        try:
-            return await asyncio.to_thread(self.generate_locked, request)
-        finally:
-            self.release()
+        return await self.execute(self.generate_locked, request)
 
     def snapshot(self, loaded_only: bool = False) -> dict:
         models = self.registry.checkpoints()
@@ -144,6 +156,7 @@ class Engine:
                 raise ServiceError(409, "capacity_conflict", f"Model slot occupied by {self.model_id}")
             self.state = "loading"
             self.model_id = model_id
+            self.fingerprint = checkpoint.fingerprint
             self.last_error = None
         backend = None
         try:
@@ -165,6 +178,8 @@ class Engine:
                 raise ServiceError(503, "engine_recovering", "Model cleanup failed") from exc
             with self.state_lock:
                 self.model_id = None
+                self.fingerprint = None
+                self.loaded_at = None
                 self.state = "unloaded"
                 self.last_error = "load_failed"
             if isinstance(exc, ServiceError):
@@ -228,26 +243,36 @@ class Engine:
         seed = request.seed if request.seed is not None else secrets.randbelow(2**32)
         start = time.perf_counter()
         try:
-            lora = None
+            if len(request.image) > CAPABILITIES[checkpoint.architecture].reference_max_count:
+                raise UnsupportedParameter("Reference count exceeds this model backend's capability")
+            loras = []
             lora_info = []
-            if request.loras:
-                lora = self.registry.lora(request.model, request.loras[0].lora_id)
+            for selection in request.loras:
+                lora = self.registry.lora(request.model, selection.lora_id)
                 if lora is None:
                     raise ServiceError(404, "lora_not_found", "LoRA not found")
                 hasher = hashlib.sha256()
                 with lora.path.open("rb") as stream:
                     for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                         hasher.update(chunk)
+                expected = request.expected_lora_sha256.get(lora.lora_id)
+                if expected and hasher.hexdigest() != expected:
+                    raise ServiceError(409, "resource_changed", "Requested LoRA version is not available")
                 if self.registry.lora(request.model, lora.lora_id) != lora:
                     raise ServiceError(409, "resource_changed", "LoRA file changed")
-                lora_info = [{"lora_id": lora.lora_id, "scale": request.loras[0].scale,
-                              "sha256": hasher.hexdigest()}]
-            png = backend.generate(request, lora, seed)
-            if not png.startswith(b"\x89PNG\r\n\x1a\n"):
-                raise RuntimeError("backend did not produce PNG")
-            if lora and self.registry.lora(request.model, lora.lora_id) != lora:
-                raise ServiceError(409, "resource_changed", "LoRA file changed during generation")
-            return {"created": int(time.time()), "data": [{"b64_json": base64.b64encode(png).decode("ascii")}],
+                loras.append(lora)
+                lora_info.append({"lora_id": lora.lora_id, "scale": selection.scale, "sha256": hasher.hexdigest()})
+            data = []
+            for index in range(request.n):
+                single = request.model_copy(update={"n": 1})
+                png = backend.generate(single, loras if len(loras) > 1 else (loras[0] if loras else None), (seed + index) % 2**32)
+                if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+                    raise RuntimeError("backend did not produce PNG")
+                data.append({"b64_json": base64.b64encode(png).decode("ascii")})
+            for lora in loras:
+                if self.registry.lora(request.model, lora.lora_id) != lora:
+                    raise ServiceError(409, "resource_changed", "LoRA file changed during generation")
+            return {"created": int(time.time()), "data": data,
                     "metadata": {"model_revision": revision, "seed": seed,
                                  "loras": lora_info, "inference_ms": int((time.perf_counter() - start) * 1000)}}
         except CleanupFailed as exc:
@@ -258,7 +283,7 @@ class Engine:
             raise ServiceError(500, "adapter_cleanup_failed", "Adapter cleanup failed") from exc
         except LoraIncompatible as exc:
             LOGGER.warning("LoRA rejected: model_id=%s lora_id=%s", request.model,
-                           request.loras[0].lora_id if request.loras else "")
+                           request.loras[0].lora_id if request.loras else "", exc_info=True)
             raise ServiceError(400, "lora_incompatible", "LoRA cannot be applied to this model") from exc
         except UnsupportedParameter as exc:
             raise ServiceError(400, "unsupported_parameter", str(exc)) from exc

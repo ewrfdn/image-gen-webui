@@ -11,15 +11,39 @@ class LoraSelection(BaseModel):
 class GenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model: str = Field(min_length=1, max_length=128)
+    expected_revision: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_artifact_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    expected_lora_sha256: dict[str, str] = Field(default_factory=dict)
     prompt: str = Field(min_length=1, max_length=4000)
     size: str = "1024x1024"
-    n: Literal[1] = 1
+    n: int = Field(default=1, ge=1, le=8, strict=True)
+    image: list[str] = Field(default_factory=list, max_length=10)
     response_format: Literal["b64_json"] = "b64_json"
     seed: int | None = Field(default=None, ge=0, le=2**32 - 1)
     num_inference_steps: int | None = Field(default=None, ge=1, le=100)
     guidance_scale: float | None = Field(default=None, ge=0, le=20, allow_inf_nan=False)
     negative_prompt: str | None = Field(default=None, max_length=4000)
-    loras: list[LoraSelection] = Field(default_factory=list, max_length=1)
+    loras: list[LoraSelection] = Field(default_factory=list, max_length=8)
+
+    @field_validator("loras")
+    @classmethod
+    def validate_loras(cls, values):
+        if len({value.lora_id for value in values}) != len(values):
+            raise ValueError("duplicate LoRA selection")
+        return values
+
+    @field_validator("image")
+    @classmethod
+    def validate_images(cls, values):
+        import base64
+        for value in values:
+            if len(value) > 28 * 1024 * 1024:
+                raise ValueError("image exceeds base64 limit")
+            try:
+                base64.b64decode(value, validate=True)
+            except ValueError:
+                raise ValueError("image must contain base64, not URLs") from None
+        return values
 
     @field_validator("size")
     @classmethod
@@ -42,6 +66,7 @@ class AppliedLora(BaseModel):
 class GenerationMetadata(BaseModel):
     request_id: str
     model_revision: str
+    model_artifact_sha256: str | None = None
     seed: int
     loras: list[AppliedLora]
     inference_ms: int

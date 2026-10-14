@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "model_id": "video-reference-demo",
+  "display_name": "参考视频模型（设计样例）",
+  "revision": "example-r1",
+  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "type": "video",
+  "architecture": "video_backend_placeholder",
+  "reference": {"supported": true, "mime_types": ["image/png", "image/jpeg", "image/webp"], "min_count": 0, "max_count": 1, "max_file_bytes": 20971520},
+  "lora": {"supported": true, "max_count": 1},
+  "generation": {
+    "default_size": "1280x720", "width_min": 640, "width_max": 1280,
+    "height_min": 360, "height_max": 720, "dimension_multiple": 8,
+    "max_pixels": 921600, "default_steps": 30, "steps_max": 60,
+    "default_guidance_scale": 5, "output_mime_types": ["video/mp4"], "timeout_seconds": 1800,
+    "video": {"default_duration_seconds": 5, "max_duration_seconds": 10, "fps": 24}
+  }
+}

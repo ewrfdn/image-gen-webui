@@ -113,3 +113,90 @@ def test_removed_loaded_source_stays_visible_until_unload(project, admin_headers
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "resource_changed"
         assert client.post("/internal/v1/models/sdxl-base/unload", headers=admin_headers).status_code == 200
+
+
+def test_gpu_oom_requires_unload_and_recovers(project, admin_headers, infer_headers, monkeypatch):
+    app, backend, _ = project
+    normal_generate = backend.generate
+
+    def oom(*args):
+        raise RuntimeError("CUDA out of memory")
+
+    payload = {"model": "sdxl-base", "prompt": "cabin"}
+    with TestClient(app) as client:
+        client.post("/internal/v1/models/sdxl-base/load", headers=admin_headers)
+        monkeypatch.setattr(backend, "generate", oom)
+        failure = client.post("/v1/images/generations", headers=infer_headers, json=payload)
+        assert failure.status_code == 500
+        assert failure.json()["error"]["code"] == "gpu_oom"
+        assert client.get("/health/ready").status_code == 503
+        blocked = client.post("/v1/images/generations", headers=infer_headers, json=payload)
+        assert blocked.status_code == 503
+        assert blocked.json()["error"]["code"] == "engine_recovering"
+        assert client.post("/internal/v1/models/sdxl-base/unload", headers=admin_headers).status_code == 200
+        monkeypatch.setattr(backend, "generate", normal_generate)
+        assert client.post("/internal/v1/models/sdxl-base/load", headers=admin_headers).status_code == 200
+        assert client.get("/health/ready").status_code == 200
+        assert client.post("/v1/images/generations", headers=infer_headers, json=payload).status_code == 200
+
+
+def test_loading_model_reports_present_source(project, admin_headers, monkeypatch):
+    app, backend, _ = project
+    started, finish = threading.Event(), threading.Event()
+
+    def load(checkpoint):
+        started.set()
+        assert finish.wait(5)
+
+    monkeypatch.setattr(backend, "load", load)
+    with TestClient(app) as client:
+        results = []
+        worker = threading.Thread(target=lambda: results.append(client.post(
+            "/internal/v1/models/sdxl-base/load", headers=admin_headers)))
+        worker.start()
+        try:
+            assert started.wait(3)
+            model = client.get("/internal/v1/models", headers=admin_headers).json()["models"][0]
+            assert model["state"] == "loading"
+            assert model["revision"]
+            assert model["source_status"] == "present"
+            assert model["can_generate"] is False
+        finally:
+            finish.set()
+            worker.join(4)
+        assert results[0].status_code == 200
+
+
+def test_batch_sequential_fallback_and_base64_contract(project, admin_headers, infer_headers):
+    app, backend, root = project
+    with TestClient(app) as client:
+        client.post("/internal/v1/models/sdxl-base/load", headers=admin_headers)
+        result = client.post("/v1/images/generations", headers=infer_headers,
+            json={"model": "sdxl-base", "prompt": "batch", "n": 3, "seed": 7})
+        assert result.status_code == 200
+        assert len(result.json()["data"]) == 3 and len(backend.calls) == 3
+        invalid = client.post("/v1/images/generations", headers=infer_headers,
+            json={"model": "sdxl-base", "prompt": "a", "image": ["https://example.com/a.png"]})
+        assert invalid.status_code == 400
+
+
+
+def test_qwen_engine_allows_ten_references_and_sdxl_rejects(project, admin_headers, infer_headers):
+    import base64
+    from test_qwen_backend import add_qwen_checkpoint
+    app, backend, root = project
+    add_qwen_checkpoint(root)
+    encoded = base64.b64encode(b"fixture").decode()
+    with TestClient(app) as client:
+        client.post("/internal/v1/models/qwen-image-21/load", headers=admin_headers)
+        result = client.post("/v1/images/generations", headers=infer_headers,
+            json={"model":"qwen-image-21", "prompt":"a", "image":[encoded]*10})
+        assert result.status_code == 200
+        over = client.post("/v1/images/generations", headers=infer_headers,
+            json={"model":"qwen-image-21", "prompt":"a", "image":[encoded]*11})
+        assert over.status_code == 400
+        client.post("/internal/v1/models/qwen-image-21/unload", headers=admin_headers)
+        client.post("/internal/v1/models/sdxl-base/load", headers=admin_headers)
+        unsupported = client.post("/v1/images/generations", headers=infer_headers,
+            json={"model":"sdxl-base", "prompt":"a", "image":[encoded]})
+        assert unsupported.status_code == 400

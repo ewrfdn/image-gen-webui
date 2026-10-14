@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from inference_service.backends.base import CleanupFailed, UnsupportedParameter
+from inference_service.backends.base import CleanupFailed, LoraIncompatible, UnsupportedParameter
 from inference_service.backends.factory import create_backend
 from inference_service.backends.qwen_image_21.backend import QwenImage21Backend
 from inference_service.config import Settings
@@ -109,6 +109,16 @@ class FakePipe:
         self.events = []
         self.active = []
         self.fail_reset = False
+        self.transformer = SimpleNamespace(get_submodule=self.get_submodule)
+
+    def get_submodule(self, name):
+        if name != "attn.to_q":
+            raise AttributeError(name)
+        return SimpleNamespace(weight=SimpleNamespace(shape=(4, 3)))
+
+    def lora_state_dict(self, *args, **kwargs):
+        return {"transformer.attn.to_q.lora_A.weight": SimpleNamespace(shape=(2, 3)),
+                "transformer.attn.to_q.lora_B.weight": SimpleNamespace(shape=(4, 2))}
 
     def to(self, device):
         self.device = device
@@ -126,7 +136,7 @@ class FakePipe:
             raise RuntimeError("reset failed")
         self.active = []
 
-    def load_lora_weights(self, path, weight_name, adapter_name):
+    def load_lora_weights(self, path, weight_name=None, adapter_name=None):
         self.events.append("load")
 
     def set_adapters(self, names, adapter_weights):
@@ -218,3 +228,69 @@ def test_qwen_failed_gpu_transfer_keeps_pipeline_for_cleanup(project, monkeypatc
     assert backend.pipeline is pipe
     backend.unload()
     assert backend.pipeline is None
+
+
+@pytest.mark.parametrize("bad_key,shape", [("unknown.lora_B.weight", (4, 2)), ("attn.to_q.lora_B.weight", (5, 2))])
+def test_qwen_rejects_partial_or_wrong_shape_lora(monkeypatch, tmp_path, bad_key, shape):
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+    pipe = FakePipe()
+    pipe.lora_state_dict = lambda *args, **kwargs: {
+        "transformer.attn.to_q.lora_A.weight": SimpleNamespace(shape=(2, 3)),
+        "transformer." + bad_key: SimpleNamespace(shape=shape)}
+    backend = QwenImage21Backend("cpu", "float32")
+    backend.pipeline = pipe
+    request = GenerationRequest(model="qwen", prompt="test", loras=[{"lora_id": "style"}])
+    with pytest.raises(LoraIncompatible):
+        backend.generate(request, Lora("qwen", "style", tmp_path / "style.safetensors", "test"), 1)
+    assert "load" not in pipe.events
+    assert pipe.events == ["reset", "reset"]
+    assert pipe.calls == []
+
+
+@pytest.mark.parametrize("architecture", ["qwen", "sdxl"])
+def test_multiple_loras_apply_together_and_reset(tmp_path, monkeypatch, architecture):
+    from inference_service.backends.sdxl.backend import SDXLBackend
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=nullcontext, Generator=FakeGenerator))
+    pipe = FakePipe()
+    applied = []
+    original = pipe.set_adapters
+    def capture(names, adapter_weights):
+        applied.append((list(names), list(adapter_weights)))
+        original(names, adapter_weights)
+    pipe.set_adapters = capture
+    backend = QwenImage21Backend("cpu", "float32") if architecture == "qwen" else SDXLBackend("cpu", "float32")
+    backend.pipeline = pipe
+    loras = [Lora("style-a", "model", tmp_path / "a.safetensors", "a"), Lora("style-b", "model", tmp_path / "b.safetensors", "b")]
+    request = GenerationRequest(model="model", prompt="a", loras=[{"lora_id": "style-a", "scale": .5}, {"lora_id": "style-b", "scale": .8}])
+    result = backend.generate(request, loras, 1)
+    assert result.startswith(b"\x89PNG")
+    assert applied == [(["request_0", "request_1"], [.5, .8])]
+    assert pipe.active == [] and pipe.events[-1] == "reset"
+
+
+@pytest.mark.parametrize("count", [1, 10])
+def test_qwen_reference_images_are_decoded_and_forwarded(monkeypatch, count):
+    import base64, io
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=nullcontext, Generator=FakeGenerator))
+    out = io.BytesIO()
+    Image.new("RGBA", (16, 16), (25, 50, 100, 128)).save(out, format="PNG")
+    encoded = base64.b64encode(out.getvalue()).decode()
+    backend = QwenImage21Backend("cpu", "float32")
+    backend.pipeline = FakePipe()
+    request = GenerationRequest(model="qwen", prompt="keep the subject", image=[encoded] * count)
+    assert backend.generate(request, None, 1).startswith(b"\x89PNG")
+    images = backend.pipeline.calls[-1]["image"]
+    assert len(images) == count
+    assert all(img.mode == "RGBA" and img.getpixel((0, 0)) == (25, 50, 100, 128) for img in images)
+    backend.generate(GenerationRequest(model="qwen", prompt="no references"), None, 2)
+    assert "image" not in backend.pipeline.calls[-1]
+
+
+def test_qwen_rejects_invalid_reference_pixels(monkeypatch):
+    import base64
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=nullcontext, Generator=FakeGenerator))
+    backend = QwenImage21Backend("cpu", "float32")
+    backend.pipeline = FakePipe()
+    with pytest.raises(UnsupportedParameter):
+        backend.generate(GenerationRequest(model="qwen", prompt="a", image=[base64.b64encode(b"not an image").decode()]), None, 1)
+    assert backend.pipeline.calls == []
