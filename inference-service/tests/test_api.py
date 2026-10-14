@@ -178,3 +178,25 @@ def test_batch_sequential_fallback_and_base64_contract(project, admin_headers, i
         invalid = client.post("/v1/images/generations", headers=infer_headers,
             json={"model": "sdxl-base", "prompt": "a", "image": ["https://example.com/a.png"]})
         assert invalid.status_code == 400
+
+
+
+def test_qwen_engine_allows_ten_references_and_sdxl_rejects(project, admin_headers, infer_headers):
+    import base64
+    from test_qwen_backend import add_qwen_checkpoint
+    app, backend, root = project
+    add_qwen_checkpoint(root)
+    encoded = base64.b64encode(b"fixture").decode()
+    with TestClient(app) as client:
+        client.post("/internal/v1/models/qwen-image-21/load", headers=admin_headers)
+        result = client.post("/v1/images/generations", headers=infer_headers,
+            json={"model":"qwen-image-21", "prompt":"a", "image":[encoded]*10})
+        assert result.status_code == 200
+        over = client.post("/v1/images/generations", headers=infer_headers,
+            json={"model":"qwen-image-21", "prompt":"a", "image":[encoded]*11})
+        assert over.status_code == 400
+        client.post("/internal/v1/models/qwen-image-21/unload", headers=admin_headers)
+        client.post("/internal/v1/models/sdxl-base/load", headers=admin_headers)
+        unsupported = client.post("/v1/images/generations", headers=infer_headers,
+            json={"model":"sdxl-base", "prompt":"a", "image":[encoded]})
+        assert unsupported.status_code == 400

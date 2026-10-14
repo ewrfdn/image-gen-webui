@@ -266,3 +266,31 @@ def test_multiple_loras_apply_together_and_reset(tmp_path, monkeypatch, architec
     assert result.startswith(b"\x89PNG")
     assert applied == [(["request_0", "request_1"], [.5, .8])]
     assert pipe.active == [] and pipe.events[-1] == "reset"
+
+
+@pytest.mark.parametrize("count", [1, 10])
+def test_qwen_reference_images_are_decoded_and_forwarded(monkeypatch, count):
+    import base64, io
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=nullcontext, Generator=FakeGenerator))
+    out = io.BytesIO()
+    Image.new("RGBA", (16, 16), (25, 50, 100, 128)).save(out, format="PNG")
+    encoded = base64.b64encode(out.getvalue()).decode()
+    backend = QwenImage21Backend("cpu", "float32")
+    backend.pipeline = FakePipe()
+    request = GenerationRequest(model="qwen", prompt="keep the subject", image=[encoded] * count)
+    assert backend.generate(request, None, 1).startswith(b"\x89PNG")
+    images = backend.pipeline.calls[-1]["image"]
+    assert len(images) == count
+    assert all(img.mode == "RGBA" and img.getpixel((0, 0)) == (25, 50, 100, 128) for img in images)
+    backend.generate(GenerationRequest(model="qwen", prompt="no references"), None, 2)
+    assert "image" not in backend.pipeline.calls[-1]
+
+
+def test_qwen_rejects_invalid_reference_pixels(monkeypatch):
+    import base64
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=nullcontext, Generator=FakeGenerator))
+    backend = QwenImage21Backend("cpu", "float32")
+    backend.pipeline = FakePipe()
+    with pytest.raises(UnsupportedParameter):
+        backend.generate(GenerationRequest(model="qwen", prompt="a", image=[base64.b64encode(b"not an image").decode()]), None, 1)
+    assert backend.pipeline.calls == []

@@ -1,6 +1,7 @@
 """Local text-to-image inference for the Qwen-Image 2.1 Diffusers pipeline."""
 
 import gc
+import base64
 import io
 from typing import Any
 
@@ -71,6 +72,19 @@ class QwenImage21Backend:
         pipe = self.pipeline
         if pipe is None:
             raise RuntimeError("pipeline is not loaded")
+        references = []
+        try:
+            from PIL import Image
+            for encoded in request.image:
+                data = base64.b64decode(encoded, validate=True)
+                if len(data) > 20 * 1024 * 1024:
+                    raise ValueError("Reference exceeds 20 MB")
+                with Image.open(io.BytesIO(data)) as image:
+                    if image.format not in ("PNG", "JPEG", "WEBP"):
+                        raise ValueError("Unsupported reference format")
+                    references.append(image.convert("RGBA"))
+        except Exception as exc:
+            raise UnsupportedParameter("Reference must be a valid PNG, JPEG or WebP, at most 20 MB") from exc
         guidance = request.guidance_scale if request.guidance_scale is not None else 1.0
         if request.negative_prompt and guidance <= 1:
             raise UnsupportedParameter("negative_prompt requires guidance_scale > 1 for Qwen-Image 2.1")
@@ -104,7 +118,7 @@ class QwenImage21Backend:
                     raise LoraIncompatible("LoRA weights could not be applied") from exc
             width, height = (int(part) for part in request.size.split("x"))
             with torch.inference_mode():
-                image = pipe(prompt=request.prompt,
+                image = pipe(**({"image": references} if references else {}), prompt=request.prompt,
                              negative_prompt=(request.negative_prompt or "") if guidance > 1 else None,
                              true_cfg_scale=guidance,
                              width=width, height=height,

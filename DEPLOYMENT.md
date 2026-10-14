@@ -99,3 +99,11 @@ docker compose -f compose.inference-node.yaml up -d --no-build --wait
 在第一台的部署仓库运行 `python3 scripts/connect_second_backend.py`，输入当前管理员密码；脚本通过现有 `dgx2-fast` SSH 获取节点凭证，使用账号会话进行幂等接入，完成后退出会话。修改过密码后，初始 `PLATFORM_ADMIN_TOKEN` 不再作为当前登录凭证。
 
 接入报告 `verification-output/second-backend/connection-report.json` 确认两个已启用节点均连接正常、模型版本一致，聚合目录仍为两个模型、五个 LoRA。真实 GPU 验收记录在同目录 `gpu-report.json` 与 `dgx2-generation.png`；验收无需停止第一台任何容器。
+
+
+## Qwen 参考图适配（2026-10-14）
+
+Qwen-Image 2.1 的同一 `QwenImage21Pipeline` 原生支持参考图，之前部署的限制来自本项目适配层，而非模型。
+现已增加 base64 图片解码与 `image` 列表传递，并允许模型目录声明最多 10 张参考图。
+Qwen 配置为 PNG/JPEG/WebP、单张 20 MB、0–10 张（保持文生图入口）；NoobAI/SDXL 不支持参考图。
+33 项协议及后端测试涵盖 1/10 张图片传递、RGBA 保留、11 张拒绝及 SDXL 能力隔离。

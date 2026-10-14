@@ -40,16 +40,18 @@ def configuration(checkpoint):
         or c["artifact_sha256"] == "0" * 64
     ):
         raise ValueError("model_config_revision_invalid")
-    # This infra currently implements text-to-image only. Declarations cannot enable edits/video.
     r = c["reference"]
-    if r != {
-        "supported": False,
-        "mime_types": [],
-        "min_count": 0,
-        "max_count": 0,
-        "max_file_bytes": 0,
-    }:
-        raise ValueError("reference_backend_not_implemented")
+    if r["supported"]:
+        if not caps.reference_max_count:
+            raise ValueError("reference_backend_not_implemented")
+        if (not 0 <= r["min_count"] <= r["max_count"] <= caps.reference_max_count
+                or not r["max_count"]
+                or not 0 < r["max_file_bytes"] <= 20 * 1024 * 1024
+                or not r["mime_types"]
+                or not set(r["mime_types"]).issubset({"image/png", "image/jpeg", "image/webp"})):
+            raise ValueError("reference_config_exceeds_backend_capabilities")
+    elif r != {"supported": False, "mime_types": [], "min_count": 0, "max_count": 0, "max_file_bytes": 0}:
+        raise ValueError("reference_config_invalid")
     g = c["generation"]
     if (
         g["width_min"] < caps.min_size

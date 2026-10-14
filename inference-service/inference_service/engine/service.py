@@ -243,8 +243,8 @@ class Engine:
         seed = request.seed if request.seed is not None else secrets.randbelow(2**32)
         start = time.perf_counter()
         try:
-            if request.image:
-                raise UnsupportedParameter("This text-to-image backend does not support references")
+            if len(request.image) > CAPABILITIES[checkpoint.architecture].reference_max_count:
+                raise UnsupportedParameter("Reference count exceeds this model backend's capability")
             loras = []
             lora_info = []
             for selection in request.loras:

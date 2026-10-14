@@ -75,3 +75,23 @@ def test_config_cannot_claim_unimplemented_reference_support(project, admin_head
         catalog = client.get("/internal/v1/catalog", headers=admin_headers).json()
         assert catalog["models"] == []
         assert catalog["errors"][0]["reason"] == "reference_backend_not_implemented"
+
+
+
+def test_qwen_catalog_advertises_ten_reference_images(project, admin_headers):
+    from test_qwen_backend import add_qwen_checkpoint
+    app, _, root = project
+    add_qwen_checkpoint(root)
+    build(root)
+    with TestClient(app) as client:
+        catalog = client.get("/internal/v1/catalog", headers=admin_headers).json()
+        qwen = next(m for m in catalog["models"] if m["model_id"] == "qwen-image-21")
+        assert qwen["configuration"]["reference"]["supported"]
+        assert qwen["configuration"]["reference"]["max_count"] == 10
+    path = root / "qwen-image-21" / "model-config.json"
+    config = json.loads(path.read_text())
+    config["reference"]["max_count"] = 11
+    path.write_text(json.dumps(config))
+    with TestClient(app) as client:
+        catalog = client.get("/internal/v1/catalog", headers=admin_headers).json()
+        assert any(e["reason"] == "reference_config_exceeds_backend_capabilities" for e in catalog["errors"])

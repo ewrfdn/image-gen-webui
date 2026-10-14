@@ -17,7 +17,7 @@ class GenerationRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
     size: str = "1024x1024"
     n: int = Field(default=1, ge=1, le=8, strict=True)
-    image: list[str] = Field(default_factory=list, max_length=8)
+    image: list[str] = Field(default_factory=list, max_length=10)
     response_format: Literal["b64_json"] = "b64_json"
     seed: int | None = Field(default=None, ge=0, le=2**32 - 1)
     num_inference_steps: int | None = Field(default=None, ge=1, le=100)

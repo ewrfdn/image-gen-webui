@@ -6,7 +6,7 @@
   "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "type": "image",
   "architecture": "qwen_image_21",
-  "reference": {"supported": false, "mime_types": [], "min_count": 0, "max_count": 0, "max_file_bytes": 0},
+  "reference": {"supported": true, "mime_types": ["image/png", "image/jpeg", "image/webp"], "min_count": 0, "max_count": 10, "max_file_bytes": 20971520},
   "lora": {"supported": true, "max_count": 8},
   "generation": {
     "max_count": 8,

@@ -136,7 +136,7 @@ Server 在目录同步、任务提交、节点选择和实际推理前检查模�
 实际参考图、LoRA 数量及张数均受模型能力约束；模型配置 `generation.max_count` 未声明时按 1 张处理。
 本地推理服务公布最多 8 张，逐张调用模型并使用连续 seed，统一返回 `data[].b64_json`。
 Qwen 的负向提示词需要 guidance > 1，UI 会在填写负向提示词时调整 guidance。
-本仓库的 Qwen/SDXL 后端仍为文生图；接入支持参考图的推理后端后，UI 才展示上传入口。
+Qwen-Image 2.1 使用同一 pipeline 支持文生图及最多 10 张参考图（PNG/JPEG/WebP，单张 20 MB）；SDXL 不支持参考图。
 URL/asset 读取、权限检查和 base64 转换都在平台 service 层完成，推理只接收 JSON。
 任务原请求存于 `raw_request`，实际补齐默认值的请求存于 `request_body`；输出文件按顺序保存，
 `raw_result` 保留 usage、trace 等返回字段，base64 内容以文件形式保存而不重复存入数据库。

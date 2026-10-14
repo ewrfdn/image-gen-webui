@@ -68,11 +68,11 @@ def build(root):
                 "type": "image",
                 "architecture": checkpoint.architecture,
                 "reference": {
-                    "supported": False,
-                    "mime_types": [],
+                    "supported": bool(caps.reference_max_count),
+                    "mime_types": ["image/png", "image/jpeg", "image/webp"] if caps.reference_max_count else [],
                     "min_count": 0,
-                    "max_count": 0,
-                    "max_file_bytes": 0,
+                    "max_count": caps.reference_max_count,
+                    "max_file_bytes": 20 * 1024 * 1024 if caps.reference_max_count else 0,
                 },
                 "lora": {"supported": True, "max_count": 8},
                 "generation": {
