@@ -47,6 +47,14 @@ const assert = (value, label) => { if (!value) throw new Error(label); };
  await page.locator('.ig-node').first().getByText('未加载', { exact: true }).waitFor({ timeout: 8000 });
  await go('generate');
  await page.locator('[data-model="test-image|r1"]').waitFor();
+ assert((await page.locator('[data-model="test-image|r1"]').boundingBox()).height <= 44, 'model choices use compact rectangular cards');
+ assert(!(await page.locator('#ig-steps').isVisible()), 'advanced controls start collapsed');
+ await page.locator('#ig-advanced').getByText('高级参数', { exact: true }).click();
+ await page.locator('#ig-steps').waitFor({ state: 'visible' });
+ await page.locator('#ig-steps').fill('7');
+ await page.locator('#ig-advanced').getByText('高级参数', { exact: true }).click();
+ assert(await page.locator('#ig-steps').inputValue() === '7', 'folding preserves advanced values');
+
  assert(!(await page.locator('#ig-model-cards').textContent()).includes('等待节点'), 'model cards hide node status');
  await select('ig-lora', 'Style');
  await page.locator('[data-model="test-video|r1"]').click();
@@ -61,6 +69,13 @@ const assert = (value, label) => { if (!value) throw new Error(label); };
  await page.locator('#ig-prompt').fill('a cabin in the forest');
  await page.locator('#ig-negative-prompt').fill('blur, watermark');
  await select('ig-count', '3 张');
+ const resolutionBounds = await page.locator('.ant-select').filter({ has: page.locator('#ig-resolution') }).boundingBox();
+ const countBounds = await page.locator('.ant-select').filter({ has: page.locator('#ig-count') }).boundingBox();
+ assert(Math.abs(resolutionBounds.y - countBounds.y) < 2, 'resolution and count share a row');
+ const negativeBounds = await page.locator('#ig-negative-prompt').boundingBox();
+ const referenceBounds = await page.locator('#ig-reference-field').boundingBox();
+ assert(referenceBounds.y >= negativeBounds.y + negativeBounds.height, 'reference uploader follows negative prompt');
+
  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNwSGgAAAIEASHL15SiAAAAAElFTkSuQmCC', 'base64');
  await page.locator('#ig-reference-field input[type=file]').setInputFiles({ name: 'ref.png', mimeType: 'image/png', buffer: png });
  await page.locator('#ig-submit').click();
