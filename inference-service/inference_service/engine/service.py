@@ -11,7 +11,7 @@ from typing import Callable
 
 import psutil
 
-from ..backends.base import Backend, CleanupFailed, LoraIncompatible, UnsupportedParameter
+from ..backends.base import Backend, BackendUnavailable, CleanupFailed, LoraIncompatible, UnsupportedParameter
 from ..backends.factory import CAPABILITIES, create_backend
 from ..config import Settings
 from ..resources import Checkpoint
@@ -184,6 +184,9 @@ class Engine:
                 self.last_error = "load_failed"
             if isinstance(exc, ServiceError):
                 raise
+            if isinstance(exc, BackendUnavailable):
+                raise ServiceError(503, "backend_unavailable",
+                                   "Execution backend is unavailable", 5) from exc
             if "out of memory" in str(exc).lower():
                 raise ServiceError(500, "gpu_oom", "GPU ran out of memory during model load") from exc
             raise ServiceError(500, "load_failed", "Model load or warmup failed") from exc
@@ -220,6 +223,23 @@ class Engine:
             self.state = "unloaded"
         return {"model_id": model_id, "state": "unloaded"}
 
+    @staticmethod
+    def _validate_parameters(caps, request: GenerationRequest) -> None:
+        """Reject parameters the loaded architecture cannot honor, before touching the GPU."""
+        if caps.fixed_steps is not None and request.num_inference_steps not in (None, caps.fixed_steps):
+            raise ServiceError(400, "unsupported_parameter",
+                               f"num_inference_steps must be {caps.fixed_steps} for this model")
+        if not caps.supports_guidance and request.guidance_scale not in (None, caps.default_guidance):
+            raise ServiceError(400, "unsupported_parameter",
+                               f"guidance_scale must be {caps.default_guidance} for this model")
+        if not caps.supports_negative_prompt and request.negative_prompt:
+            raise ServiceError(400, "unsupported_parameter",
+                               "negative_prompt is not supported by this model")
+        if len(request.loras) > caps.lora_limit:
+            raise ServiceError(400, "unsupported_parameter",
+                               "This model accepts no LoRA adapters" if not caps.lora_limit
+                               else f"This model accepts at most {caps.lora_limit} LoRA adapters")
+
     def generate_locked(self, request: GenerationRequest) -> dict:
         if not valid_id(request.model):
             raise ServiceError(404, "model_not_found", "Model not found")
@@ -237,6 +257,7 @@ class Engine:
                 raise ServiceError(409, "resource_changed", "Model files changed; unload and reload")
             if not CAPABILITIES[checkpoint.architecture].validate_size(request.size):
                 raise ServiceError(400, "unsupported_size", "Image size is not supported by this model")
+            self._validate_parameters(CAPABILITIES[checkpoint.architecture], request)
             backend = self.backend
             revision = self.fingerprint
             self.active_requests = 1
@@ -285,6 +306,11 @@ class Engine:
             LOGGER.warning("LoRA rejected: model_id=%s lora_id=%s", request.model,
                            request.loras[0].lora_id if request.loras else "", exc_info=True)
             raise ServiceError(400, "lora_incompatible", "LoRA cannot be applied to this model") from exc
+        except BackendUnavailable as exc:
+            # The slot stays ready: ComfyUI may come back, and the next call reloads weights.
+            LOGGER.warning("Backend unavailable: model_id=%s error=%s", request.model, exc)
+            raise ServiceError(503, "backend_unavailable",
+                               "Execution backend is unavailable", 5) from exc
         except UnsupportedParameter as exc:
             raise ServiceError(400, "unsupported_parameter", str(exc)) from exc
         except ServiceError:

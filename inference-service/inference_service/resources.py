@@ -17,7 +17,8 @@ class Checkpoint:
 
     def public(self) -> dict:
         result = {"model_id": self.model_id, "architecture": self.architecture,
-                  "format": "diffusers", "layout": self.layout, "availability": self.availability,
+                  "format": {"comfy": "comfyui", "modular": "diffusers-modular"}.get(self.layout, "diffusers"),
+                  "layout": self.layout, "availability": self.availability,
                   "validation": "structure_checked", "fingerprint": self.fingerprint}
         if self.reason:
             result["reason"] = self.reason

@@ -137,6 +137,7 @@ Server 在目录同步、任务提交、节点选择和实际推理前检查模�
 本地推理服务公布最多 8 张，逐张调用模型并使用连续 seed，统一返回 `data[].b64_json`。
 Qwen 的负向提示词需要 guidance > 1，UI 会在填写负向提示词时调整 guidance。
 Qwen-Image 2.1 使用同一 pipeline 支持文生图及最多 10 张参考图（PNG/JPEG/WebP，单张 20 MB）；SDXL 不支持参考图。
+MiniMax-H3-Image 支持两种本地承载：官方 135 GB 全精度快照经 Diffusers 官方转换后由推理服务**分阶段**原生运行（每阶段只常驻一个组件，2048² 端到端 67 s），或改用 ComfyUI 单文件剪枝权重（≈57 GB）；两者都是固定 6 步、无 guidance/负向提示词、不支持 LoRA，尺寸 1024–6272 且 32 的倍数，默认 3104×3104。接入方式见 `inference-service/README.md`。
 URL/asset 读取、权限检查和 base64 转换都在平台 service 层完成，推理只接收 JSON。
 任务原请求存于 `raw_request`，实际补齐默认值的请求存于 `request_body`；输出文件按顺序保存，
 `raw_result` 保留 usage、trace 等返回字段，base64 内容以文件形式保存而不重复存入数据库。

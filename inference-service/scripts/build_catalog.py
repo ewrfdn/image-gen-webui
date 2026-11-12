@@ -8,8 +8,10 @@ from inference_service.engine.registry import Registry
 from inference_service.backends.factory import CAPABILITIES
 
 
-def build(root):
+def build(root, models=None):
     for checkpoint in Registry(root).checkpoints().values():
+        if models and checkpoint.model_id not in models:
+            continue
         manifest_path = checkpoint.resource_dir / "artifact-manifest.json"
         files = []
         old = {}
@@ -23,6 +25,10 @@ def build(root):
                 or any(p.startswith(".") for p in relative.parts)
                 or file.name in ("model-config.json", "artifact-manifest.json")
             ):
+                continue
+            # Components symlinked in from outside the checkpoint are not part of its
+            # manifest: catalog.configuration() rejects paths that resolve outside.
+            if not file.resolve().is_relative_to(checkpoint.path.resolve()):
                 continue
             stat = file.stat()
             previous = old.get(relative.as_posix())
@@ -74,10 +80,10 @@ def build(root):
                     "max_count": caps.reference_max_count,
                     "max_file_bytes": 20 * 1024 * 1024 if caps.reference_max_count else 0,
                 },
-                "lora": {"supported": True, "max_count": 8},
+                "lora": {"supported": bool(caps.lora_limit), "max_count": caps.lora_limit},
                 "generation": {
-                    "max_count": 8,
-                    "default_size": "1024x1024",
+                    "max_count": caps.max_count,
+                    "default_size": caps.default_size,
                     "width_min": caps.min_size,
                     "width_max": caps.max_size,
                     "height_min": caps.min_size,
@@ -85,7 +91,7 @@ def build(root):
                     "dimension_multiple": caps.multiple_of,
                     "max_pixels": caps.max_pixels,
                     "default_steps": caps.default_steps,
-                    "steps_max": 100,
+                    "steps_max": caps.fixed_steps or 100,
                     "default_guidance_scale": caps.default_guidance,
                     "output_mime_types": ["image/png"],
                     "timeout_seconds": 900,
@@ -98,4 +104,7 @@ def build(root):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
-    build(parser.parse_args().root)
+    parser.add_argument("--model", action="append",
+                        help="only build these model ids (repeatable)")
+    args = parser.parse_args()
+    build(args.root, set(args.model) if args.model else None)

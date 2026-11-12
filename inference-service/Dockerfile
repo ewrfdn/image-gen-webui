@@ -6,30 +6,35 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 ARG SERVICE_VERSION=0.1.0
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.title="image-gen-inference" \
-      org.opencontainers.image.version=${SERVICE_VERSION} \
-      org.opencontainers.image.revision=${VCS_REF}
+      org.opencontainers.image.version="${SERVICE_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}"
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     UV_PYTHON_INSTALL_DIR=/opt/python UV_PROJECT_ENVIRONMENT=/opt/venv \
     PATH=/opt/venv/bin:$PATH HF_HUB_OFFLINE=1 HF_HOME=/tmp/huggingface
 RUN uv python install 3.14.6 && uv venv --python 3.14.6 /opt/venv
-RUN uv pip install --python /opt/venv/bin/python torch==2.9.1+cu130 \
-    --index-url https://download.pytorch.org/whl/cu130
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-# Use the lock's non-Torch dependencies; never replace the CUDA wheel with gpu extra's Torch.
-RUN uv export --frozen --extra gpu --extra test --no-emit-project --no-emit-package torch \
-    --no-hashes --output-file /tmp/requirements.txt && \
+# The GPU stack is installed explicitly: the lock predates the MiniMax-H3-Image support.
+RUN uv pip install --python /opt/venv/bin/python --no-deps \
+      torch==2.13.0+cu130 torchvision==0.28.0+cu130 \
+      --index-url https://download.pytorch.org/whl/cu130 && \
+    uv export --frozen --extra test --no-emit-project --no-emit-package torch \
+      --no-hashes --output-file /tmp/requirements.txt && \
     uv pip install --python /opt/venv/bin/python --no-deps -r /tmp/requirements.txt
-# Qwen3VL's processor imports its video processor even for text-only generation.
-RUN uv pip install --python /opt/venv/bin/python --no-deps torchvision==0.24.1 \
-    --index-url https://download.pytorch.org/whl/cu130
+# MiniMax-H3-Image lives in the modular pipeline that was merged on 2026-11-10; no
+# Diffusers release on PyPI carries it yet, so the commit is pinned.
+RUN uv pip install --python /opt/venv/bin/python --no-deps \
+      "transformers==5.22.2" "accelerate==1.15.0" "safetensors==0.8.0" \
+      "diffusers @ git+https://github.com/huggingface/diffusers@875373ac7f5856071e345a3e394c74efccc6b9e6"
 COPY inference_service ./inference_service
 COPY scripts ./scripts
 COPY tests ./tests
 RUN uv pip install --python /opt/venv/bin/python --no-deps . && \
-    python -c "import torch; from diffusers import QwenImage21Pipeline; print(torch.__version__)" && \
+    python -c "import torch, diffusers; \
+from diffusers import MiniMaxH3ImageModularPipeline; \
+print(torch.__version__, diffusers.__version__)" && \
     uv pip freeze --python /opt/venv/bin/python > /app/runtime-requirements.txt
 USER 1000:1000
 EXPOSE 8000

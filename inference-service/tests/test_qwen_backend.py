@@ -49,8 +49,14 @@ def test_qwen_discovery_capabilities_and_size_validation(project, admin_headers,
         assert client.post("/internal/v1/models/qwen-image-21/load", headers=admin_headers).status_code == 200
         oversized = client.post("/v1/images/generations", headers=infer_headers,
                                 json={"model": "qwen-image-21", "prompt": "test", "size": "2752x2752"})
+        # 2752**2 exceeds this model's pixel budget, so the engine rejects it after discovery
+        # rather than the request schema, which now spans every supported architecture.
         assert oversized.status_code == 400
-        assert oversized.json()["error"]["code"] == "invalid_request"
+        assert oversized.json()["error"]["code"] == "unsupported_size"
+        malformed = client.post("/v1/images/generations", headers=infer_headers,
+                                json={"model": "qwen-image-21", "prompt": "test", "size": "7000x7000"})
+        assert malformed.status_code == 400
+        assert malformed.json()["error"]["code"] == "invalid_request"
         supported = client.post("/v1/images/generations", headers=infer_headers,
                                 json={"model": "qwen-image-21", "prompt": "test", "size": "2048x2048"})
         assert supported.status_code == 200

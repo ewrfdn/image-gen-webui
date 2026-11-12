@@ -12,6 +12,9 @@ class Settings:
     dtype: str = "bfloat16"
     instance_id: str = "gpu-node-1"
     model_offload: str = "none"
+    comfyui_url: str = "http://127.0.0.1:8188"
+    comfyui_timeout_seconds: float = 900.0
+    comfyui_warmup: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -33,6 +36,17 @@ class Settings:
             raise RuntimeError("MODEL_OFFLOAD must be none, model_cpu or sequential_cpu")
         if offload != "none" and not device.startswith("cuda:"):
             raise RuntimeError("MODEL_OFFLOAD requires a CUDA device")
+        comfyui_url = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/")
+        if not comfyui_url.startswith(("http://", "https://")):
+            raise RuntimeError("COMFYUI_URL must start with http:// or https://")
+        try:
+            comfyui_timeout = float(os.environ.get("COMFYUI_TIMEOUT_SECONDS", "900"))
+        except ValueError:
+            raise RuntimeError("COMFYUI_TIMEOUT_SECONDS must be a number") from None
+        if comfyui_timeout <= 0:
+            raise RuntimeError("COMFYUI_TIMEOUT_SECONDS must be positive")
+        warmup = os.environ.get("COMFYUI_WARMUP", "").strip().lower() in {"1", "true", "yes"}
         return cls(Path(root).expanduser().resolve(), inference, admin,
                    device, dtype,
-                   os.environ.get("INSTANCE_ID", "gpu-node-1"), offload)
+                   os.environ.get("INSTANCE_ID", "gpu-node-1"), offload,
+                   comfyui_url, comfyui_timeout, warmup)

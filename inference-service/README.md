@@ -1,6 +1,6 @@
 # Inference service
 
-独立的同步文生图服务。默认空载启动；管理端先调用 `load`，业务 Worker 再调用 `POST /v1/images/generations`。服务不保存用户、任务或图片。支持本地 Diffusers 布局的 SDXL 和 Qwen-Image 2.1 checkpoint；同一进程一次只加载一个模型。
+独立的同步文生图服务。默认空载启动；管理端先调用 `load`，业务 Worker 再调用 `POST /v1/images/generations`。服务不保存用户、任务或图片。支持本地 Diffusers 布局的 SDXL、Qwen-Image 2.1，以及只有 ComfyUI 单文件权重时才成立的 MiniMax-H3-Image；同一进程一次只加载一个模型。
 
 ## 代码结构
 
@@ -14,6 +14,8 @@ inference_service/
   backends/factory.py       # 根据模型架构选择 backend
   backends/sdxl/backend.py  # SDXL 的加载、出图和 LoRA 隔离
   backends/qwen_image_21/backend.py  # Qwen-Image 2.1 的独立实现
+  backends/comfyui/client.py         # 本机 ComfyUI 的最小 HTTP 客户端（标准库）
+  backends/comfyui/backend.py        # ComfyUI 权重架构的工作流构造与请求校验
   config.py                 # 运行配置
   resources.py              # 各层共享的资源类型
   schemas.py                # 各层共享的请求和响应类型
@@ -48,6 +50,96 @@ export MODEL_ROOT=~/models
 ```
 
 也可从 Qwen 官方链接的 [ModelScope 镜像](https://modelscope.cn/models/Qwen/Qwen-Image-2.1) 下载同一 Diffusers 目录：`modelscope download Qwen/Qwen-Image-2.1 --local-dir ~/models/qwen-image-2.1`。下载完成后确认 `~/models/qwen-image-2.1/model_index.json` 存在，并以 `qwen-image-2.1` 为模型 ID 调用 API。现有三份 ComfyUI 单文件权重不会被这个 backend 加载；它们也不需要删除。
+
+## ComfyUI 权重（MiniMax-H3-Image）
+
+MiniMax-H3-Image 的全精度权重是 DiT 66 GB + Qwen3-VL 编码器 67 GB，单台 128 GB 统一内存的 DGX Spark 装不下，Diffusers 的 CPU offload 在统一内存上也不扩容。可用形态是 ComfyUI 的单文件权重（剪枝 BF16 DiT ~40 GB + 量化编码器 + VAE ≈ 57 GB），因此这一架构由本机 ComfyUI 执行，本服务只做契约转换与参数校验。
+
+模型目录不再放 Diffusers 布局，而是放一个 `comfy-model.json` 描述符：
+
+```text
+MODEL_ROOT/
+  minimax-h3-image/
+    comfy-model.json      # 架构、三个权重文件名、采样固定参数
+    model-config.json     # build_catalog.py 生成
+    artifact-manifest.json
+```
+
+```json
+{
+  "schema_version": 1,
+  "architecture": "minimax_h3_image",
+  "backend": "comfyui",
+  "models": {
+    "unet": "minimax_h3_image_pruned_bf16.safetensors",
+    "clip": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+    "vae": "minimax_h3_image_vae_fp16.safetensors"
+  },
+  "clip_type": "minimax",
+  "sampling": {"steps": 6, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple"}
+}
+```
+
+权重文件名是 ComfyUI 自己模型目录里的名字，不接受路径分隔符。服务用 `GET /object_info` 校验三个文件确实出现在对应 loader 的可选列表中，校验不过则 `load` 失败并给出缺失文件名。
+
+```bash
+export COMFYUI_URL=http://127.0.0.1:8188   # 本机 ComfyUI，默认值即此
+export COMFYUI_TIMEOUT_SECONDS=900          # 一张 16 MP 图可能接近两分钟
+export COMFYUI_WARMUP=1                     # 可选：load 时先跑一张 min_size 的预热图
+```
+
+`load` 只做节点与权重存在性校验；ComfyUI 懒加载权重，所以默认情况下**第一次出图**才把 ~57 GB 权重搬进内存，通常超出调用方 300 秒的等待，因此建议验收和生产都开 `COMFYUI_WARMUP=1`，把这段开销压到 `load` 里（与 SDXL/Qwen 的预热语义一致）。`unload` 调 ComfyUI 的 `/free` 释放显存，ComfyUI 未启动时视为已卸载。
+
+错误语义与原生 backend 对齐：ComfyUI 不可达、拒绝工作流或执行报错返回 **503 `backend_unavailable`**（带 `Retry-After: 5`，模型槽保持 `ready`，下次调用会自动重新加载权重）；执行日志里出现 `out of memory` 时返回 **500 `gpu_oom`** 并把槽标记为 `error`，与原生 CUDA OOM 走同一条恢复路径。
+
+该架构的请求约束由能力表声明并在进入 backend 前返回 400：
+
+| 参数 | 约束 |
+| --- | --- |
+| `num_inference_steps` | 只能省略或为 6（蒸馏固定 6 步） |
+| `guidance_scale` | 只能省略或为 1（guidance 已烘焙进权重，无 CFG） |
+| `negative_prompt` | 不支持 |
+| `loras` | 不支持（本仓库的 turbo LoRA 属于 H3 视频模型） |
+| `size` | 1024–6272、32 的倍数、≤16,859,136 像素；默认 3104×3104 |
+| `image` | 参考图最多 10 张，PNG/JPEG/WebP，单张 ≤20 MB，prompt 里按顺序引用 `<Picture 1>`… |
+
+图生图与文生图共用一张图：有 `image` 时走 `image_conditioned` 工作流，没有时走 `text2image`；两者都是 `UNETLoader → CLIPLoader(minimax) → VAELoader → MiniMaxH3ImageConditioning → ConditioningZeroOut → KSampler(6, cfg 1, euler/simple) → VAEDecode`，与 ComfyUI 官方模板一致。
+
+## 全精度 MiniMax-H3-Image（Diffusers modular，原生后端）
+
+官方的 135 GB 快照（DiT 62 GB + Qwen3-VL 编码器 63 GB + VAE 2.2 GB）在 128 GB 统一内存上无法常驻，因此这一架构由 `backends/minimax_h3_image` 在进程内**分阶段**执行：每个阶段只装载一组组件，跑完即释放。
+
+| 阶段 | 组件 | 常驻 | 实测 |
+| --- | --- | --- | --- |
+| `before_encode` + `text_encoder` | tokenizer/processor + Qwen3-VL 32B | ~65 GB | 14 s |
+| `denoise` | scheduler + MiniMax-H3 DiT | ~63 GB | 31 s（6 步，2048² 每步 ~3 s） |
+| `decode` | VAE（fp32）+ image processor | ~3 GB | 5 s |
+
+单张 2048² 端到端 **67 s**（含三次权重装载）。权重留在 page cache 里，后续请求更快。
+
+准备模型目录（在 GPU 主机上执行一次）：
+
+```bash
+# 1. 官方快照是 ComfyUI/SGLang 的原生命名，Diffusers 需要转换
+python scripts/convert_minimax_h3_to_diffusers.py --version image \
+  --checkpoint_path ~/models/MiniMax-H3-Image \
+  --output_path ~/models/MiniMax-H3-Image-diffusers \
+  --text_encoder_path ~/models/MiniMax-H3-Image/text_encoder \
+  --modular_repo_id ~/models/MiniMax-H3-Image-diffusers
+# 2. 生成 model-config.json / artifact-manifest.json
+python scripts/build_catalog.py --root ~/models --model MiniMax-H3-Image-diffusers
+```
+
+转换脚本来自 Diffusers 官方仓库（`scripts/convert_minimax_h3_to_diffusers.py`，commit `875373ac`）。它把 `transformer/`、`vae/` 写成 `transformer_diffusers/`、`vae_diffusers/` 并生成 `modular_model_index.json`；`text_encoder/` 与原始快照相同，可以直接软链进来以免复制 63 GB。
+
+服务侧的约束：固定 6 步、无 guidance、无负向提示词、无 LoRA、尺寸 1024–6272 且为 32 的倍数、默认 3104×3104、参考图最多 10 张。
+
+**已知的性能陷阱**（都已在本仓库代码里规避，修改时请勿退回）：
+
+- Transformers 与 Diffusers 的默认装载器会直接从 safetensors 映射里拷贝，在本机会退化到几 MB/s（63 GB 的编码器要数小时）。`backends/minimax_h3_image/loading.py` 先用 `clone()` 把张量落到匿名内存再 `.to(device)`，并用 `load_state_dict(assign=True)` 装配：编码器 7 s、DiT 14 s。
+- `from_config()` 遵循全局默认 dtype（float32），33 B 的 DiT 会被分配 132 GB 并触发 OOM killer；`load_diffusers_gpu` 显式把默认 dtype 设成 bf16。
+- VAE 必须 fp32 解码、且**不要**用 `VaeImageProcessor()` 覆盖管线自带的 processor（默认 `do_normalize=True`、`vae_scale_factor=8`，会把图像冲淡）。
+- 每个阶段都用 `ModularPipeline.from_pretrained` 新建管线：`update_components(name=None)` 会重写组件规格，复用同一实例会加载到错的组件。
 
 ## 本机协议测试
 

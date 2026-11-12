@@ -21,10 +21,13 @@ dependencies = [
 
 [project.optional-dependencies]
 gpu = [
-  "torch>=2.5,<2.8; python_version < '3.14'",
-  "diffusers @ git+https://github.com/huggingface/diffusers.git@d961a388fd02e4db38d17350c8dd9b8abe642e05",
-  "transformers==5.19.0",
-  "accelerate==1.12.0",
+  # cu130 wheels only; the vendor GB10 build of Torch is installed separately in the image.
+  "torch>=2.13,<2.14",
+  "torchvision>=0.28,<0.29",
+  # MiniMax-H3-Image merged into Diffusers on 2026-11-10 (no PyPI release yet).
+  "diffusers @ git+https://github.com/huggingface/diffusers.git@875373ac7f5856071e345a3e394c74efccc6b9e6",
+  "transformers==5.22.2",
+  "accelerate==1.15.0",
   "peft==0.21.2",
   "safetensors==0.8.0",
 ]

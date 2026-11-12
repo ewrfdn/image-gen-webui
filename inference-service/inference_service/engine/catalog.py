@@ -77,7 +77,7 @@ def configuration(checkpoint):
     ):
         raise ValueError("model_config_default_size_invalid")
     if (
-        not 0 <= c["lora"]["max_count"] <= 8
+        not 0 <= c["lora"]["max_count"] <= caps.lora_limit
         or bool(c["lora"]["max_count"]) != c["lora"]["supported"]
     ):
         raise ValueError("model_config_lora_invalid")
@@ -124,7 +124,7 @@ def catalogue(engine):
                     "model_id": checkpoint.model_id,
                     "revision": c["revision"],
                     "artifact_sha256": c["artifact_sha256"],
-                    "configuration": {**c, "generation": {**c["generation"], "max_count": 8}},
+                    "configuration": {**c, "generation": {**c["generation"], "max_count": CAPABILITIES[checkpoint.architecture].max_count}},
                     "local_available": True,
                     "loras": loras,
                 }

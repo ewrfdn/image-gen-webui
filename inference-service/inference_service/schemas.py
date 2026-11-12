@@ -52,8 +52,10 @@ class GenerationRequest(BaseModel):
             width, height = (int(part) for part in value.split("x"))
         except (ValueError, AttributeError):
             raise ValueError("size must be WIDTHxHEIGHT") from None
-        if width < 512 or height < 512 or width > 2752 or height > 2752 or width * height > 4_718_592 or width % 32 or height % 32:
-            raise ValueError("size must use multiples of 32 from 512 to 2752, at most 4718592 pixels")
+        # Global superset of the supported architectures; the loaded model's
+        # capabilities narrow it further with a 400 unsupported_size.
+        if width < 512 or height < 512 or width > 6272 or height > 6272 or width * height > 16_859_136 or width % 32 or height % 32:
+            raise ValueError("size must use multiples of 32 from 512 to 6272, at most 16859136 pixels")
         return value
 
 
