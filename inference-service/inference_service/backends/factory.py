@@ -29,7 +29,8 @@ def create_backend(checkpoint: Checkpoint, settings: Settings) -> Backend:
     if checkpoint.architecture == "minimax_h3_image":
         if checkpoint.layout == "modular":
             # Full-precision Diffusers checkpoint: staged, in-process execution.
-            return MiniMaxH3ImageBackend(CAPABILITIES["minimax_h3_image"], settings.device)
+            return MiniMaxH3ImageBackend(CAPABILITIES["minimax_h3_image"], settings.device,
+                                         encoder_int8=settings.h3_encoder_int8)
         return ComfyUIBackend(CAPABILITIES["minimax_h3_image"], settings.comfyui_url,
                               settings.comfyui_timeout_seconds, settings.comfyui_warmup)
     raise ValueError(f"Unsupported model architecture: {checkpoint.architecture}")
