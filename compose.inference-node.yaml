@@ -1,7 +1,7 @@
 name: image-gen-infra
 services:
   inference:
-    image: image-gen-inference:${SERVICE_VERSION:-0.2.0}
+    image: image-gen-inference:${SERVICE_VERSION:-0.5.0}
     build:
       context: ./inference-service
       dockerfile: Dockerfile.platform

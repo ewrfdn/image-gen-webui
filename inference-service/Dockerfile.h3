@@ -1,0 +1,20 @@
+# Incremental image: the validated GPU base (Torch 2.9.1+cu130, Python 3.14.6) already
+# runs on the Sparks, so only the MiniMax-H3-Image stack is layered on top.
+FROM image-gen-inference:0.4.0-f312b60baa
+USER root
+COPY pyproject.toml /app/pyproject.toml
+COPY inference_service /app/inference_service
+COPY scripts /app/scripts
+COPY tests /app/tests
+# MiniMax-H3-Image merged into Diffusers on 2026-11-10; no PyPI release carries it yet.
+# The base venv is uv-managed and has no pip; everything goes through uv.
+RUN uv pip install --python /opt/venv/bin/python --no-deps \
+      "transformers==5.22.2" "accelerate==1.15.0" "safetensors==0.8.0" && \
+    uv pip install --python /opt/venv/bin/python --no-deps \
+      "diffusers @ git+https://github.com/huggingface/diffusers@875373ac7f5856071e345a3e394c74efccc6b9e6" && \
+    uv pip install --python /opt/venv/bin/python --no-deps /app && \
+    /opt/venv/bin/python -c "import torch, diffusers; \
+from diffusers import MiniMaxH3ImageModularPipeline; \
+print(torch.__version__, diffusers.__version__)" && \
+    uv pip freeze --python /opt/venv/bin/python > /app/runtime-requirements.txt
+USER 1000:1000
