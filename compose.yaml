@@ -30,7 +30,7 @@ services:
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${PLATFORM_PORT:-18080}:8000"
     volumes:
-      - ./platform-data:/data
+      - ${PLATFORM_DATA_ROOT:-./platform-data}:/data
     depends_on:
       database:
         condition: service_healthy

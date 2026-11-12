@@ -68,6 +68,19 @@ ssh -N -L 18080:127.0.0.1:18080 local-dgx
 
 保留.env、models、platform-data和数据库卷。更新源码和镜像后：
 
+> **数据目录必须显式指定。** server 把产物写在 `DATA_ROOT=/data`，也就是 compose 里
+> `${PLATFORM_DATA_ROOT:-./platform-data}`。从**另一个 checkout** 启动时，默认值会指向那个新目录里的空
+> `platform-data`，数据库（命名卷，保留历史任务记录）仍然完好，但界面里的历史图片会全部 404，
+> 表现成"升级后图片全丢了"。升级时用环境变量固定到原目录：
+>
+> ```bash
+> echo 'PLATFORM_DATA_ROOT=/home/sakana/work/image-gen-platform/platform-data' >> .env
+> docker compose --env-file .env up -d --no-deps server
+> ```
+>
+> 核对方法：`docker inspect image-gen-platform-server-1 --format '{{range .Mounts}}{{.Source}}->{{.Destination}}{{end}}'`
+> 应指向含 `outputs/ blobs/ references/` 的历史目录；`du -sh <dir>` 与数据库里 succeeded 任务数应能对上。
+
 ```bash
 cd ~/work/image-gen-platform
 export VCS_REF=$(git rev-parse HEAD)
