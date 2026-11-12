@@ -1,15 +1,17 @@
 """Native MiniMax-H3-Image inference on the official Diffusers modular pipeline.
 
-The full-precision checkpoint is 135 GB (62 GB transformer, 63 GB Qwen3-VL text
-encoder, 2.2 GB VAE) and one DGX Spark has 128 GB of unified memory, so the backend
-never holds the pipeline: every request loads one component group, runs its stage and
-frees it again. Peak residency is therefore ~65 GB instead of 135 GB.
+Two placement modes share one code path:
 
-    encode   text_encoder + tokenizer + processor (+ vae for edit references)  ~14 s
-    denoise  transformer + scheduler                                          ~31 s
-    decode   vae (fp32) + image processor                                     ~5 s
+* resident (default) — `load` brings the int8 text encoder (32 GiB), the transformer
+  (62 GiB) and the fp32 VAE (2.3 GiB) onto the device and keeps them there, so a
+  request only pays for sampling: ~40 s for 2048² instead of ~75 s. Large canvases
+  evict the encoder before denoising and reload it lazily, because 96 GiB of weights
+  plus 16 MP activations do not fit in 128 GiB.
+* staged — used when the checkpoint does not fit or `H3_RESIDENT=0`; every stage loads
+  only the component group it needs and frees it again (peak ~65 GiB, ~75 s).
 
-Weights stay in the page cache between requests, so the second request is faster.
+Either way the pipeline object itself is rebuilt per stage: `update_components(name=None)`
+rewrites the component specs, so a reused instance starts loading the wrong files.
 """
 
 import base64
@@ -31,6 +33,10 @@ CPU_KEYS = {"text_token_tags"}
 STATE_KEYS = ("prompt_embeds", "text_token_tags", "reference_latents", "reference_noise",
               "latents", "height", "width", "output_height", "output_width",
               "min_generation_area")
+# Above this canvas the encoder is evicted before denoising: 96 GiB of resident weights
+# plus the activations of a 16 MP latent do not fit the 128 GiB unified pool.
+EVICT_ENCODER_PIXELS = 8 * 1024 * 1024
+GIB = 2 ** 30
 
 
 def move_to_device(value, device="cuda", key=None):
@@ -48,18 +54,22 @@ def move_to_device(value, device="cuda", key=None):
 class MiniMaxH3ImageBackend:
     def __init__(self, capabilities: BackendCapabilities, device: str = "cuda",
                  loader=load_diffusers_gpu, encoder_loader=load_qwen3vl, log=LOGGER.info,
-                 encoder_int8: bool = True):
+                 encoder_int8: bool = True, resident: bool = True):
         self.capabilities = capabilities
         self.device = device
         # int8 weight-only halves the encoder (62 -> 32 GiB) at a cosine of 0.99999 on
         # the conditioning it produces, which is what lets it stay resident next to the
-        # transformer instead of being reloaded for every request.
+        # transformer.
         self.encoder_int8 = encoder_int8
+        self.resident = resident
         self.loader = loader
         self.encoder_loader = encoder_loader
         self.log = log
         self.pipe = None
         self.root = None
+        self.encoder = None
+        self.transformer = None
+        self.vae = None
 
     # -- lifecycle ---------------------------------------------------------
     def load(self, checkpoint: Checkpoint) -> None:
@@ -73,11 +83,61 @@ class MiniMaxH3ImageBackend:
             if not (root / subfolder).is_dir() or not any((root / subfolder).iterdir()):
                 raise ValueError(f"MODEL_COMPONENT_MISSING:{subfolder}")
         self.root = root
-        # A fresh ModularPipeline per stage: `update_components(name=None)` rewrites the
-        # component specs, and a reused pipeline then loads the wrong component files.
-        self.pipe = self._pipeline()
+        self.pipe = ModularPipeline.from_pretrained(str(root), local_files_only=True)
+        if not self.resident:
+            return
+        free = torch.cuda.mem_get_info()[0] / GIB if torch.cuda.is_available() else 0.0
+        if free < 96:
+            self.log(f"only {free:.0f} GiB free; falling back to staged execution")
+            self.resident = False
+            return
+        started = time.perf_counter()
+        self._ensure_encoder()
+        self._ensure_transformer()
+        self._ensure_vae()
+        torch.cuda.empty_cache()
+        self.log(f"resident load {time.perf_counter() - started:.1f} s, "
+                 f"{torch.cuda.memory_allocated() / GIB:.1f} GiB on device")
+
+    def unload(self) -> None:
+        import torch
+        self.encoder = self.transformer = self.vae = None
+        self.pipe = None
+        self.root = None
+        gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    # -- component cache ---------------------------------------------------
+    def _ensure_encoder(self):
+        if self.encoder is None:
+            started = time.perf_counter()
+            encoder = self.encoder_loader(self.root / "text_encoder", device=self.device,
+                                          log=self.log)
+            if self.encoder_int8:
+                encoder = self._quantize_encoder(encoder)
+            self.encoder = encoder
+            self.log(f"text_encoder ready in {time.perf_counter() - started:.1f} s")
+        return self.encoder
+
+    def _ensure_transformer(self):
+        import torch
+        from diffusers import MiniMaxH3ImageTransformer2DModel
+        if self.transformer is None:
+            started = time.perf_counter()
+            self.transformer = self.loader(MiniMaxH3ImageTransformer2DModel,
+                                           self.root / "transformer_diffusers",
+                                           device=self.device, log=self.log)
+            self.log(f"transformer ready in {time.perf_counter() - started:.1f} s")
+        return self.transformer
+
+    def _ensure_vae(self):
+        import torch
+        from diffusers import AutoencoderKLMiniMaxH3Image
+        if self.vae is None:
+            self.vae = self.loader(AutoencoderKLMiniMaxH3Image, self.root / "vae_diffusers",
+                                   device=self.device, dtype=torch.float32, log=self.log)
+        return self.vae
 
     def _quantize_encoder(self, encoder):
         import torch
@@ -85,21 +145,22 @@ class MiniMaxH3ImageBackend:
         started = time.perf_counter()
         quantize_(encoder, Int8WeightOnlyConfig())
         torch.cuda.synchronize()
+        # quantize_ swaps every weight for an int8 copy; the freed bf16 blocks stay in
+        # the allocator cache and would otherwise hold ~17 GiB the pool needs.
+        torch.cuda.empty_cache()
         self.log(f"  text_encoder int8: {time.perf_counter() - started:.1f} s, "
-                 f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB on device")
+                 f"{torch.cuda.memory_allocated() / GIB:.1f} GiB on device")
         return encoder
 
     def _pipeline(self):
         from diffusers import ModularPipeline
         return ModularPipeline.from_pretrained(str(self.root), local_files_only=True)
 
-    def unload(self) -> None:
+    def _drop_encoder(self) -> None:
         import torch
-        self.pipe = None
-        self.root = None
+        self.encoder = None
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
     # -- generation --------------------------------------------------------
     def generate(self, request: GenerationRequest, lora: Lora | list[Lora] | None, seed: int) -> bytes:
@@ -152,11 +213,10 @@ class MiniMaxH3ImageBackend:
         from diffusers.modular_pipelines.modular_pipeline import PipelineState
 
         pipe = self._pipeline()
-        names = ["tokenizer", "processor"] + (["vae"] if references else [])
+        # Tokenizer and processor are megabytes; they are loaded per stage in both modes.
+        names = ["tokenizer", "processor"] + (["vae"] if references and not self.resident else [])
         pipe.load_components(names=names, dtype=torch.bfloat16, device_map=self.device)
-        encoder = self.encoder_loader(self.root / "text_encoder", device=self.device, log=self.log)
-        if self.encoder_int8:
-            encoder = self._quantize_encoder(encoder)
+        encoder = self._ensure_encoder()
         pipe.update_components(text_encoder=encoder)
         try:
             state = PipelineState()
@@ -173,19 +233,21 @@ class MiniMaxH3ImageBackend:
                 pipe, state = pipe.blocks.sub_blocks["vae_encoder"](pipe, state)
             return {key: state.get(key) for key in STATE_KEYS if state.get(key) is not None}
         finally:
-            del encoder
-            self._free(pipe, names)
+            if not self.resident:
+                self._free(pipe, names)
 
     def _denoise(self, payload: dict, width: int, height: int, seed: int) -> dict:
         import torch
-        from diffusers import MiniMaxH3ImageTransformer2DModel
         from diffusers.modular_pipelines.modular_pipeline import PipelineState
 
+        # A 16 MP canvas needs the pool the encoder occupies; drop it and reload lazily.
+        if self.resident and width * height > EVICT_ENCODER_PIXELS and self.encoder is not None:
+            self.log(f"evicting text_encoder for {width}x{height}")
+            self._drop_encoder()
         pipe = self._pipeline()
+        # The scheduler is a few kilobytes; both modes load it for the stage.
         pipe.load_components(names=["scheduler"], device_map=self.device)
-        transformer = self.loader(MiniMaxH3ImageTransformer2DModel,
-                                  self.root / "transformer_diffusers", device=self.device,
-                                  log=self.log)
+        transformer = self._ensure_transformer()
         pipe.update_components(transformer=transformer)
         try:
             state = PipelineState()
@@ -198,34 +260,25 @@ class MiniMaxH3ImageBackend:
             pipe, state = pipe.blocks.sub_blocks["denoise"](pipe, state)
             return {key: state.get(key) for key in ("latents", "output_height", "output_width")}
         finally:
-            del transformer
-            self._free(pipe, ["scheduler"])
+            if not self.resident:
+                pipe.unload_components(["scheduler"])
 
     def _decode(self, payload: dict):
         import torch
-        from diffusers import AutoencoderKLMiniMaxH3Image
         from diffusers.modular_pipelines.modular_pipeline import PipelineState
 
         pipe = self._pipeline()
-        # fp32 decode and the fast shard loader: the VAE is only 2.2 GB, but diffusers'
-        # own loader needs over two minutes for it on this machine. The decoder takes
-        # latents_mean / latents_std from `vae.config`, which from_config keeps.
-        vae = self.loader(AutoencoderKLMiniMaxH3Image, self.root / "vae_diffusers",
-                          device=self.device, dtype=torch.float32, log=self.log)
+        vae = self._ensure_vae()
         pipe.update_components(vae=vae)
-        try:
-            state = PipelineState()
-            for key, value in payload.items():
-                state.set(key, value)
-            state.set("output_type", "pil")
-            pipe, state = pipe.blocks.sub_blocks["decode"](pipe, state)
-            images = state.get("images")
-            if not images:
-                raise RuntimeError("decode produced no image")
-            return images[0]
-        finally:
-            del vae
-            self._free(pipe, [])
+        state = PipelineState()
+        for key, value in payload.items():
+            state.set(key, value)
+        state.set("output_type", "pil")
+        pipe, state = pipe.blocks.sub_blocks["decode"](pipe, state)
+        images = state.get("images")
+        if not images:
+            raise RuntimeError("decode produced no image")
+        return images[0]
 
     @staticmethod
     def _free(pipe, names) -> None:

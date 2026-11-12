@@ -1,0 +1,49 @@
+# Incremental image: the validated GPU base (Torch 2.9.1+cu130, Python 3.14.6) already
+# runs on the Sparks, so only the MiniMax-H3-Image stack is layered on top.
+FROM image-gen-inference:0.4.0-f312b60baa
+USER root
+# Torch 2.13 is what the whole stack was validated against, and torchao 0.18 needs it
+# (it imports torch.nn.functional.ScalingType, added after 2.9).
+RUN uv pip install --python /opt/venv/bin/python --index-url https://download.pytorch.org/whl/cu130 \
+      torch==2.13.0+cu130 torchvision==0.28.0+cu130
+COPY pyproject.toml /app/pyproject.toml
+COPY inference_service /app/inference_service
+COPY scripts /app/scripts
+COPY tests /app/tests
+# GitHub and PyPI are unreliable from the build host, so the validated wheels' trees are
+# copied over the base image instead of being installed over the network:
+#   diffusers 0.42.0.dev0 (commit 875373ac, the commit that merged MiniMax-H3-Image)
+#   transformers 5.22.2, tokenizers 0.23.3, accelerate 1.15.0, huggingface_hub 2.4.0
+COPY diffusers_pkg /tmp/pkgs/diffusers
+COPY transformers /tmp/pkgs/transformers
+COPY tokenizers /tmp/pkgs/tokenizers
+COPY accelerate /tmp/pkgs/accelerate
+COPY huggingface_hub /tmp/pkgs/huggingface_hub
+COPY httpx2 /tmp/pkgs/httpx2
+COPY httpcore2 /tmp/pkgs/httpcore2
+COPY truststore /tmp/pkgs/truststore
+COPY torchao /tmp/pkgs/torchao
+COPY torchao-0.18.0.dist-info /tmp/pkgs/torchao-0.18.0.dist-info
+COPY truststore-0.10.5.dist-info /tmp/pkgs/truststore-0.10.5.dist-info
+COPY accelerate-1.15.0.dist-info /tmp/pkgs/accelerate-1.15.0.dist-info
+COPY httpcore2-2.16.0.dist-info /tmp/pkgs/httpcore2-2.16.0.dist-info
+COPY httpx2-2.16.0.dist-info /tmp/pkgs/httpx2-2.16.0.dist-info
+COPY huggingface_hub-2.4.0.dist-info /tmp/pkgs/huggingface_hub-2.4.0.dist-info
+COPY tokenizers-0.23.3.dist-info /tmp/pkgs/tokenizers-0.23.3.dist-info
+COPY transformers-5.22.2.dist-info /tmp/pkgs/transformers-5.22.2.dist-info
+RUN SP=/opt/venv/lib/python3.14/site-packages && \
+    for pkg in diffusers transformers tokenizers accelerate huggingface_hub httpx2 httpcore2 truststore torchao; do \
+      rm -rf "$SP/$pkg" && cp -r "/tmp/pkgs/$pkg" "$SP/$pkg"; \
+    done && \
+    for info in /tmp/pkgs/*.dist-info; do \
+      name=$(basename "$info" | sed -E 's/-[0-9].*//'); \
+      rm -rf "$SP/${name}"-*.dist-info 2>/dev/null; cp -r "$info" "$SP/"; \
+    done && \
+    uv pip install --python /opt/venv/bin/python --no-deps /app && \
+    /opt/venv/bin/python -c "import torch, diffusers, transformers; \
+from diffusers import MiniMaxH3ImageModularPipeline; \
+from transformers import Qwen3VLForConditionalGeneration; \
+print(torch.__version__, diffusers.__version__, transformers.__version__)" && \
+    uv pip freeze --python /opt/venv/bin/python > /app/runtime-requirements.txt
+RUN chmod -R a+rX /app
+USER 1000:1000

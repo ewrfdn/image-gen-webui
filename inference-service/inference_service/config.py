@@ -16,6 +16,7 @@ class Settings:
     comfyui_timeout_seconds: float = 900.0
     comfyui_warmup: bool = False
     h3_encoder_int8: bool = True
+    h3_resident: bool = True
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -49,7 +50,8 @@ class Settings:
         warmup = os.environ.get("COMFYUI_WARMUP", "").strip().lower() in {"1", "true", "yes"}
         # int8 weight-only text encoder; set 0 to keep the bf16 one for A/B comparisons.
         encoder_int8 = os.environ.get("H3_ENCODER_INT8", "1").strip().lower() not in {"0", "false", "no"}
+        resident = os.environ.get("H3_RESIDENT", "1").strip().lower() not in {"0", "false", "no"}
         return cls(Path(root).expanduser().resolve(), inference, admin,
                    device, dtype,
                    os.environ.get("INSTANCE_ID", "gpu-node-1"), offload,
-                   comfyui_url, comfyui_timeout, warmup, encoder_int8)
+                   comfyui_url, comfyui_timeout, warmup, encoder_int8, resident)
